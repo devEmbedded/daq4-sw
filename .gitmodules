@@ -1,0 +1,6 @@
+[submodule "libopencm3"]
+	path = libopencm3
+	url = https://github.com/libopencm3/libopencm3.git
+[submodule "baselibc"]
+	path = baselibc
+	url = https://github.com/PetteriAimonen/Baselibc.git
