@@ -1,7 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "board.h"
-#include "cdcncm.h"
+#include "usbnet.h"
 #include "tcpip.h"
 #include <libopencm3/stm32/st_usbfs.h>
 
@@ -11,7 +11,9 @@ int main(void)
   
   board_initialize();
   
-  usbd_dev = cdcncm_init(&st_usbfs_v2_usb_driver);
+  printf("Boot!\n");
+  
+  usbd_dev = usbnet_init(&st_usbfs_v2_usb_driver);
   
   while (1)
   {

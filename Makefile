@@ -27,7 +27,7 @@ LIBS += $(BASELIBC_DIR)/libc.a
 ###############################################################################
 # Source code files
 CSRC = src/main.c src/board.c
-CSRC += src/cdcncm.c src/cdcncm_descriptors.c
+CSRC += src/usbnet.c src/usbnet_descriptors.c
 CSRC += src/tcpip.c
 CSRC += src/libc_glue.c
 

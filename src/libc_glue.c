@@ -25,3 +25,9 @@ void __assert_fail(const char *msg, const char *file, unsigned int line)
   printf("%s:%d Assertion failed: %s\n", file, line, msg);
   while(1);
 }
+
+void hard_fault_handler()
+{
+  printf("Hardfault\n");
+  while(1);
+}

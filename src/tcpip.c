@@ -2,9 +2,9 @@
 #include <stddef.h>
 #include "board.h"
 #include "tcpip.h"
-#include "cdcncm.h"
+#include "usbnet.h"
 
-#if 0
+#if defined(TCPIP_DEBUG) || 1
 #define dbg(fmt, ...) printf("%15s ("__FILE__ ":%3d): " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
 #else
 #define dbg(fmt, ...)
@@ -19,8 +19,6 @@ ipv6_addr_t g_ipv6_local_addr = {
 mac_addr_t g_mac_local_addr = {
   {0x00, 0x11, 0x22, 0x33, 0x44, 0x56}
 };
-
-static systime_t g_prev_router_adv;
 
 static uint32_t ipsum(void *data, size_t length)
 {
@@ -56,7 +54,7 @@ static buint16_t icmp_checksum(ipv6_header_t *hdr)
   return foldsum(sum);
 }
 
-static void prepare_multicast_headers(cdcncm_buffer_t *packet)
+static void prepare_multicast_headers(usbnet_buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -72,7 +70,7 @@ static void prepare_multicast_headers(cdcncm_buffer_t *packet)
   response->ipv6.dest = IPV6_ALL_NODES_MULTICAST;
 }
 
-static void prepare_reply_headers(cdcncm_buffer_t *packet)
+static void prepare_reply_headers(usbnet_buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -88,8 +86,11 @@ static void prepare_reply_headers(cdcncm_buffer_t *packet)
   response->ipv6.source = g_ipv6_local_addr;
 }
 
-static void send_neighbor_advertisement(cdcncm_buffer_t *packet)
+static void send_neighbor_advertisement(usbnet_buffer_t *packet)
 {
+  bool solicited = packet;
+  ipv6_addr_t target_addr = g_ipv6_local_addr;
+  
   struct {
     ethernet_header_t eth;
     ipv6_header_t ipv6;
@@ -99,35 +100,12 @@ static void send_neighbor_advertisement(cdcncm_buffer_t *packet)
       ipv6_addr_t target_addr;
       icmp6_option_link_address_t opt;
     } __attribute__((packed)) payload;
-  } *response = (void*)packet->data;
+  } *response;
   
-  prepare_reply_headers(packet);
-  response->ipv6.payload_length = uint16_to_buint16(sizeof(response->payload));
-  response->ipv6.next_header = IP_NEXTHDR_ICMP6;
-  
-  memset(&response->payload, 0, sizeof(response->payload));
-  response->payload.icmp.type = ICMP_TYPE_NEIGHBOR_ADVERTISEMENT;
-  response->payload.icmp.code = 0;
-  response->payload.flags = 0x60;
-  response->payload.target_addr = g_ipv6_local_addr;
-  response->payload.opt.type = 2;
-  response->payload.opt.length = 1;
-  response->payload.opt.addr = g_mac_local_addr;
-  
-  response->payload.icmp.checksum = icmp_checksum(&response->ipv6);
-  
-  packet->data_size = sizeof(*response);
-  cdcncm_transmit(packet);
-  
-  dbg("Response sent");
-}
-
-static void send_router_advertisement(cdcncm_buffer_t *packet)
-{
   if (!packet)
   {
     // Unsolicited advert
-    packet = cdcncm_allocate();
+    packet = usbnet_allocate(sizeof(*response));
     if (!packet) return;
     prepare_multicast_headers(packet);
   }
@@ -136,6 +114,37 @@ static void send_router_advertisement(cdcncm_buffer_t *packet)
     prepare_reply_headers(packet);
   }
   
+  response = (void*)packet->data;
+  
+  if (solicited && response->payload.target_addr.bytes[0] == 0xfe)
+  {
+    target_addr = IPV6_LINK_LOCAL_ADDR(g_mac_local_addr);
+  }
+  
+  response->ipv6.payload_length = uint16_to_buint16(sizeof(response->payload));
+  response->ipv6.next_header = IP_NEXTHDR_ICMP6;
+  
+  dbg("ADDR %02x%02x::%02x", response->payload.target_addr.bytes[0], response->payload.target_addr.bytes[1], response->payload.target_addr.bytes[15]);
+  
+  memset(&response->payload, 0, sizeof(response->payload));
+  response->payload.icmp.type = ICMP_TYPE_NEIGHBOR_ADVERTISEMENT;
+  response->payload.icmp.code = 0;
+  response->payload.flags = solicited ? 0x60 : 0x20;
+  response->payload.target_addr = target_addr;
+  response->payload.opt.type = 2;
+  response->payload.opt.length = 1;
+  response->payload.opt.addr = g_mac_local_addr;
+  
+  response->payload.icmp.checksum = icmp_checksum(&response->ipv6);
+  
+  packet->data_size = sizeof(*response);
+  usbnet_transmit(packet);
+  
+  dbg("Response sent");
+}
+
+static void send_router_advertisement(usbnet_buffer_t *packet)
+{
   struct {
     ethernet_header_t eth;
     ipv6_header_t ipv6;
@@ -149,7 +158,21 @@ static void send_router_advertisement(cdcncm_buffer_t *packet)
       icmp6_option_prefix_info_t prefix;
       icmp6_option_mtu_t mtu;
     } __attribute__((packed)) payload;
-  } *response = (void*)packet->data;
+  } *response;
+  
+  if (!packet)
+  {
+    // Unsolicited advert
+    packet = usbnet_allocate(sizeof(*response));
+    if (!packet) return;
+    prepare_multicast_headers(packet);
+  }
+  else
+  {
+    prepare_reply_headers(packet);
+  }
+  
+  response = (void*)packet->data;
   
   response->ipv6.payload_length = uint16_to_buint16(sizeof(response->payload));
   response->ipv6.next_header = IP_NEXTHDR_ICMP6;
@@ -170,17 +193,17 @@ static void send_router_advertisement(cdcncm_buffer_t *packet)
   
   response->payload.mtu.type = 5;
   response->payload.mtu.length = 1;
-  response->payload.mtu.mtu = uint32_to_buint32(CDCNCM_BUFFER_SIZE);
+  response->payload.mtu.mtu = uint32_to_buint32(USBNET_BUFFER_SIZE);
   
   response->payload.icmp.checksum = icmp_checksum(&response->ipv6);
   
   packet->data_size = sizeof(*response);
-  cdcncm_transmit(packet);
+  usbnet_transmit(packet);
   
   dbg("Response sent");
 }
 
-static void send_ping_reply(cdcncm_buffer_t *packet)
+static void send_ping_reply(usbnet_buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -195,12 +218,12 @@ static void send_ping_reply(cdcncm_buffer_t *packet)
   response->icmp.type = ICMP_TYPE_ECHO_REPLY;
   response->icmp.checksum = icmp_checksum(&response->ipv6);
   
-  cdcncm_transmit(packet);
+  usbnet_transmit(packet);
   
   dbg("Response sent");
 }
   
-static void handle_icmp6(cdcncm_buffer_t *packet)
+static void handle_icmp6(usbnet_buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -225,11 +248,11 @@ static void handle_icmp6(cdcncm_buffer_t *packet)
   }
   else
   {
-    cdcncm_release(packet);
+    usbnet_release(packet);
   }
 }
 
-static void handle_ipv6(cdcncm_buffer_t *packet)
+static void handle_ipv6(usbnet_buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -247,13 +270,13 @@ static void handle_ipv6(cdcncm_buffer_t *packet)
   }
   else
   {
-    cdcncm_release(packet);
+    usbnet_release(packet);
   }
 }
 
 void tcpip_poll()
 {
-  cdcncm_buffer_t *packet = cdcncm_receive();
+  usbnet_buffer_t *packet = usbnet_receive();
   
   if (packet)
   {
@@ -274,16 +297,27 @@ void tcpip_poll()
     }
     else
     {
-      cdcncm_release(packet);
+      usbnet_release(packet);
     }
     
     (void)start;
     dbg("---------- Processed, time delta: %10d us\n", (int)(get_systime() - start));
   }
   
-  if (get_systime() - g_prev_router_adv > SYSTIME_FREQ * 2 && cdcncm_get_tx_queue_size() == 0)
+  systime_t time_now = get_systime();
+  int interval = (time_now > 30 * SYSTIME_FREQ) ? 30 * SYSTIME_FREQ : 1 * SYSTIME_FREQ;
+  
+  static systime_t prev_router_adv;
+  if (time_now - prev_router_adv > interval && usbnet_get_tx_queue_size() == 0)
   {
-    g_prev_router_adv = get_systime();
+    prev_router_adv = time_now;
     send_router_advertisement(NULL);
+  }
+  
+  static systime_t prev_host_adv;
+  if (time_now - prev_host_adv > interval && usbnet_get_tx_queue_size() == 0)
+  {
+    prev_host_adv = time_now;
+    send_neighbor_advertisement(NULL);
   }
 }

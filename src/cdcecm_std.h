@@ -1,5 +1,5 @@
-#ifndef CDCNCM_STD_H
-#define CDCNCM_STD_H
+#ifndef CDCECM_STD_H
+#define CDCECM_STD_H
 
 #include <libopencm3/usb/cdc.h>
 
@@ -8,6 +8,7 @@
 /* USB CDC NCM standard definitions, from ECM120 and NCM10 standards */
 
 /* Class Subclass Code */
+#define USB_CDC_SUBCLASS_ECM  0x06
 #define USB_CDC_SUBCLASS_NCM  0x0D
 
 /* bDescriptor SubType */

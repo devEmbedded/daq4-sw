@@ -39,4 +39,3 @@ void board_initialize()
   TIM2_CR1 = TIM_CR1_CEN;
   TIM2_EGR = TIM_EGR_UG;
 }
-

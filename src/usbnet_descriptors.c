@@ -1,5 +1,5 @@
-#include "cdcncm_descriptors.h"
-#include "cdcncm_std.h"
+#include "usbnet_descriptors.h"
+#include "cdcecm_std.h"
 
 const struct usb_device_descriptor g_device_descriptor = {
         .bLength = USB_DT_DEVICE_SIZE,
@@ -18,26 +18,51 @@ const struct usb_device_descriptor g_device_descriptor = {
         .bNumConfigurations = 1,
 };
 
-static const struct usb_endpoint_descriptor comm_endp[] = {{
+static const struct usb_endpoint_descriptor rndis_irq_endp[] = {{
         .bLength = USB_DT_ENDPOINT_SIZE,
         .bDescriptorType = USB_DT_ENDPOINT,
-        .bEndpointAddress = CDCNCM_IRQ_EP,
+        .bEndpointAddress = RNDIS_IRQ_EP,
         .bmAttributes = USB_ENDPOINT_ATTR_INTERRUPT,
-        .wMaxPacketSize = 16,
+        .wMaxPacketSize = 8,
         .bInterval = 100,
 }};
 
-static const struct usb_endpoint_descriptor data_endp[] = {{
+static const struct usb_endpoint_descriptor rndis_data_endp[] = {{
         .bLength = USB_DT_ENDPOINT_SIZE,
         .bDescriptorType = USB_DT_ENDPOINT,
-        .bEndpointAddress = CDCNCM_OUT_EP,
+        .bEndpointAddress = RNDIS_IN_EP,
         .bmAttributes = USB_ENDPOINT_ATTR_BULK,
         .wMaxPacketSize = 64,
         .bInterval = 1,
 }, {
         .bLength = USB_DT_ENDPOINT_SIZE,
         .bDescriptorType = USB_DT_ENDPOINT,
-        .bEndpointAddress = CDCNCM_IN_EP,
+        .bEndpointAddress = RNDIS_OUT_EP,
+        .bmAttributes = USB_ENDPOINT_ATTR_BULK,
+        .wMaxPacketSize = 64,
+        .bInterval = 1,
+}};
+
+static const struct usb_endpoint_descriptor cdcecm_irq_endp[] = {{
+        .bLength = USB_DT_ENDPOINT_SIZE,
+        .bDescriptorType = USB_DT_ENDPOINT,
+        .bEndpointAddress = CDCECM_IRQ_EP,
+        .bmAttributes = USB_ENDPOINT_ATTR_INTERRUPT,
+        .wMaxPacketSize = 16,
+        .bInterval = 100,
+}};
+
+static const struct usb_endpoint_descriptor cdcecm_data_endp[] = {{
+        .bLength = USB_DT_ENDPOINT_SIZE,
+        .bDescriptorType = USB_DT_ENDPOINT,
+        .bEndpointAddress = CDCECM_IN_EP,
+        .bmAttributes = USB_ENDPOINT_ATTR_BULK,
+        .wMaxPacketSize = 64,
+        .bInterval = 1,
+}, {
+        .bLength = USB_DT_ENDPOINT_SIZE,
+        .bDescriptorType = USB_DT_ENDPOINT,
+        .bEndpointAddress = CDCECM_OUT_EP,
         .bmAttributes = USB_ENDPOINT_ATTR_BULK,
         .wMaxPacketSize = 64,
         .bInterval = 1,
@@ -45,22 +70,14 @@ static const struct usb_endpoint_descriptor data_endp[] = {{
 
 static const struct {
         struct usb_cdc_header_descriptor header;
-        struct usb_cdc_ncm_descriptor ncm;
         struct usb_cdc_enfd_descriptor enfd;
         struct usb_cdc_union_descriptor cdc_union;
-} __attribute__((packed)) cdcncm_functional_descriptors = {
+} __attribute__((packed)) cdcecm_functional_descriptors = {
         .header = {
                 .bFunctionLength = sizeof(struct usb_cdc_header_descriptor),
                 .bDescriptorType = CS_INTERFACE,
                 .bDescriptorSubtype = USB_CDC_TYPE_HEADER,
                 .bcdCDC = 0x0110,
-        },
-        .ncm = {
-                .bFunctionLength = sizeof(struct usb_cdc_ncm_descriptor),
-                .bDescriptorType = CS_INTERFACE,
-                .bDescriptorSubtype = USB_CDC_TYPE_NCM,
-                .bcdNcmVersion = USB_CDC_NCM_VERSION,
-                .bmNetworkCapabilities = 0,
         },
         .enfd = {
             .bFunctionLength = sizeof(struct usb_cdc_enfd_descriptor),
@@ -76,33 +93,63 @@ static const struct {
                 .bFunctionLength = sizeof(struct usb_cdc_union_descriptor),
                 .bDescriptorType = CS_INTERFACE,
                 .bDescriptorSubtype = USB_CDC_TYPE_UNION,
-                .bControlInterface = 0,
-                .bSubordinateInterface0 = 1,
+                .bControlInterface = 2,
+                .bSubordinateInterface0 = 3,
          },
 };
 
-static const struct usb_interface_descriptor comm_iface[] = {{
+static const struct usb_interface_descriptor rndis_irq_iface[] = {{
         .bLength = USB_DT_INTERFACE_SIZE,
         .bDescriptorType = USB_DT_INTERFACE,
-        .bInterfaceNumber = 0,
+        .bInterfaceNumber = RNDIS_INTERFACE,
         .bAlternateSetting = 0,
         .bNumEndpoints = 1,
         .bInterfaceClass = USB_CLASS_CDC,
-        .bInterfaceSubClass = USB_CDC_SUBCLASS_NCM,
-        .bInterfaceProtocol = 0,
+        .bInterfaceSubClass = USB_CDC_SUBCLASS_ACM,
+        .bInterfaceProtocol = 0xFF,
         .iInterface = 0,
 
-        .endpoint = comm_endp,
-
-        .extra = &cdcncm_functional_descriptors,
-        .extralen = sizeof(cdcncm_functional_descriptors),
+        .endpoint = rndis_irq_endp,
 }};
 
-static const struct usb_interface_descriptor data_iface[] = {
+static const struct usb_interface_descriptor rndis_data_iface[] = {
 {
         .bLength = USB_DT_INTERFACE_SIZE,
         .bDescriptorType = USB_DT_INTERFACE,
         .bInterfaceNumber = 1,
+        .bAlternateSetting = 0,
+        .bNumEndpoints = 2,
+        .bInterfaceClass = USB_CLASS_DATA,
+        .bInterfaceSubClass = 0,
+        .bInterfaceProtocol = 0,
+        .iInterface = 0,
+
+        .endpoint = rndis_data_endp,
+}
+};
+
+static const struct usb_interface_descriptor cdcecm_irq_iface[] = {{
+        .bLength = USB_DT_INTERFACE_SIZE,
+        .bDescriptorType = USB_DT_INTERFACE,
+        .bInterfaceNumber = 2,
+        .bAlternateSetting = 0,
+        .bNumEndpoints = 1,
+        .bInterfaceClass = USB_CLASS_CDC,
+        .bInterfaceSubClass = 0, //USB_CDC_SUBCLASS_ECM,
+        .bInterfaceProtocol = 0,
+        .iInterface = 0,
+
+        .endpoint = cdcecm_irq_endp,
+
+        .extra = &cdcecm_functional_descriptors,
+        .extralen = sizeof(cdcecm_functional_descriptors),
+}};
+
+static const struct usb_interface_descriptor cdcecm_data_iface[] = {
+{
+        .bLength = USB_DT_INTERFACE_SIZE,
+        .bDescriptorType = USB_DT_INTERFACE,
+        .bInterfaceNumber = 3,
         .bAlternateSetting = 0,
         .bNumEndpoints = 0,
         .bInterfaceClass = USB_CLASS_DATA,
@@ -113,7 +160,7 @@ static const struct usb_interface_descriptor data_iface[] = {
 {
         .bLength = USB_DT_INTERFACE_SIZE,
         .bDescriptorType = USB_DT_INTERFACE,
-        .bInterfaceNumber = 1,
+        .bInterfaceNumber = 3,
         .bAlternateSetting = 1,
         .bNumEndpoints = 2,
         .bInterfaceClass = USB_CLASS_DATA,
@@ -121,26 +168,37 @@ static const struct usb_interface_descriptor data_iface[] = {
         .bInterfaceProtocol = 0,
         .iInterface = 0,
 
-        .endpoint = data_endp,
+        .endpoint = cdcecm_data_endp,
 }
 };
 
 static uint8_t g_cdc_ncm_cur_altsetting;
 
-static const struct usb_interface ifaces[] = {{
-        .num_altsetting = 1,
-        .altsetting = comm_iface,
-}, {
-        .num_altsetting = 2,
-        .altsetting = data_iface,
-        .cur_altsetting = &g_cdc_ncm_cur_altsetting
-}};
+static const struct usb_interface ifaces[] = {
+{
+  .num_altsetting = 1,
+  .altsetting = rndis_irq_iface,
+},
+{
+  .num_altsetting = 1,
+  .altsetting = rndis_data_iface,
+},
+{
+  .num_altsetting = 1,
+  .altsetting = cdcecm_irq_iface,
+},
+{
+  .num_altsetting = 2,
+  .altsetting = cdcecm_data_iface,
+  .cur_altsetting = &g_cdc_ncm_cur_altsetting
+}
+};
 
 const struct usb_config_descriptor g_config_descriptor = {
         .bLength = USB_DT_CONFIGURATION_SIZE,
         .bDescriptorType = USB_DT_CONFIGURATION,
         .wTotalLength = 0,
-        .bNumInterfaces = 2,
+        .bNumInterfaces = 4,
         .bConfigurationValue = 1,
         .iConfiguration = 0,
         .bmAttributes = 0x80,
@@ -149,7 +207,7 @@ const struct usb_config_descriptor g_config_descriptor = {
         .interface = ifaces,
 };
 
-const char *g_usb_strings[] = {
+const char *g_usb_strings[USBNET_USB_STRING_COUNT] = {
         "devEmbedded",
         "DAQ4",
         "SERIALNUM",
