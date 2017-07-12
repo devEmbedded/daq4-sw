@@ -27,7 +27,7 @@ void board_initialize()
   gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO2);
   gpio_set_af(GPIOA, GPIO_AF1, GPIO2);
   
-  usart_set_baudrate(USART2, 115200);
+  usart_set_baudrate(USART2, 921600);
   usart_set_databits(USART2, 8);
   usart_set_mode(USART2, USART_MODE_TX);
   usart_enable(USART2);

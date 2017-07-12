@@ -9,8 +9,8 @@ const struct usb_device_descriptor g_device_descriptor = {
         .bDeviceSubClass = 0,
         .bDeviceProtocol = 0,
         .bMaxPacketSize0 = 64,
-        .idVendor = 0x0483,
-        .idProduct = 0x5740,
+        .idVendor = 0x1d6b,
+        .idProduct = 0x0128,
         .bcdDevice = 0x0200,
         .iManufacturer = 1,
         .iProduct = 2,
@@ -24,7 +24,7 @@ static const struct usb_endpoint_descriptor rndis_irq_endp[] = {{
         .bEndpointAddress = RNDIS_IRQ_EP,
         .bmAttributes = USB_ENDPOINT_ATTR_INTERRUPT,
         .wMaxPacketSize = 8,
-        .bInterval = 100,
+        .bInterval = 1,
 }};
 
 static const struct usb_endpoint_descriptor rndis_data_endp[] = {{
@@ -210,6 +210,6 @@ const struct usb_config_descriptor g_config_descriptor = {
 const char *g_usb_strings[USBNET_USB_STRING_COUNT] = {
         "devEmbedded",
         "DAQ4",
-        "SERIALNUM",
+        "SEsRsLN3UdM",
         "001122334455"
 };

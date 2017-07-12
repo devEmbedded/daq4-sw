@@ -53,7 +53,7 @@ baselibc/libc.a: baselibc/Makefile
 
 $(BINNAME): $(CSRC) $(LDSCRIPT) $(LIBS) Makefile
 	$(CC) $(CFLAGS) -M -MT daq4.elf $(CSRC) > .deps
-	$(CC) $(CFLAGS) -MMD -o $@ -Wl,--start-group $(LFLAGS) $(LIBS) $(CSRC) -Wl,--end-group
+	$(CC) $(CFLAGS) -o $@ -Wl,--start-group $(LFLAGS) $(LIBS) $(CSRC) -Wl,--end-group
 	$(SIZE) -t $@
 
 ###############################################################################
@@ -67,6 +67,6 @@ program: $(BINNAME)
 	$(OOCD) $(OOCDFLAGS) -c "program $< verify reset exit"
 
 debug: $(BINNAME)
-	$(GDB) -iex 'target extended | $(OOCD) $(OOCDFLAGS) -c "gdb_port pipe"' \
+	$(GDB) -iex 'target remote | $(OOCD) $(OOCDFLAGS) -c "gdb_port pipe"' \
                -iex 'mon halt' $<
 

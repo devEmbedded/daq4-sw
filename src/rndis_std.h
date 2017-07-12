@@ -6,21 +6,7 @@
 
 #define RNDIS_NOTIFICATION_RESPONSE_AVAILABLE 0x01
 
-#define RNDIS_PACKET_MSG        0x00000001
-#define RNDIS_INITIALIZE_MSG    0x00000002
-#define RNDIS_HALT_MSG          0x00000003
-#define RNDIS_QUERY_MSG         0x00000004
-#define RNDIS_SET_MSG           0x00000005
-
-#define RNDIS_STATUS_SUCCESS            0x00000000
-#define RNDIS_STATUS_FAILURE            0xC0000001
-#define RNDIS_STATUS_NOT_SUPPORTED      0xC00000BB
-
-#define RNDIS_OID_SUPPORTED_LIST        0x00010101
-#define RNDIS_OID_PHYSICAL_MEDIUM       0x00010202
-#define RNDIS_OID_PACKET_FILTER         0x0001010E
-#define RNDIS_OID_PERMANENT_ADDRESS     0x01010101
-#define RNDIS_OID_CURRENT_ADDRESS       0x01010102
+#include "rndis_defs.h"
 
 struct rndis_notification {
   uint32_t Notification;
@@ -83,6 +69,11 @@ struct rndis_set_msg {
   uint32_t InformationBufferOffset;
   uint32_t Reserved;
   uint32_t Buffer[];
+};
+
+struct rndis_reset_cmplt {
+  struct rndis_response_header hdr;
+  uint32_t AddressingReset;
 };
 
 struct rndis_packet_msg {

@@ -4,7 +4,7 @@
 #include "tcpip.h"
 #include "usbnet.h"
 
-#if defined(TCPIP_DEBUG) || 1
+#if defined(TCPIP_DEBUG)
 #define dbg(fmt, ...) printf("%15s ("__FILE__ ":%3d): " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
 #else
 #define dbg(fmt, ...)
@@ -276,6 +276,9 @@ static void handle_ipv6(usbnet_buffer_t *packet)
 
 void tcpip_poll()
 {
+  if (!usbnet_is_connected())
+    return;
+  
   usbnet_buffer_t *packet = usbnet_receive();
   
   if (packet)
