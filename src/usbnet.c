@@ -3,13 +3,14 @@
 #include "rndis_std.h"
 #include "usbnet_descriptors.h"
 #include "network_std.h"
+#include "board.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>
 #include <libopencm3/cm3/cortex.h>
 
 #if defined(USBNET_DEBUG)
-#define dbg(fmt, ...) printf("%15s ("__FILE__ ":%3d): " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
+#define dbg(fmt, ...) printf(__FILE__ ":%3d: " fmt "\n", __LINE__, ##__VA_ARGS__)
 #else
 #define dbg(fmt, ...)
 #endif
@@ -35,14 +36,12 @@ static bool g_rndis_connected;
 static usbnet_buffer_t *g_usbnet_transmit_queue;
 static usbnet_buffer_t *g_usbnet_received;
 
+static bool rx_alloc_buffer(size_t size);
 static void usbnet_set_config(usbd_device *usbd_dev, uint16_t wValue);
-static int usbnet_ctrl_callback(usbd_device *usbd_dev, struct usb_setup_data *req,
-        uint8_t **buf, uint16_t *len, usbd_control_complete_callback *complete);
 static void usbnet_altset_callback(usbd_device *usbd_dev, uint16_t wIndex, uint16_t wValue);
 
 usbd_device *usbnet_init(const usbd_driver *driver)
 {
-
   for (int i = 0; i < USBNET_BUFFER_COUNT; i++)
   {
     *(uint16_t*)&g_usbnet_bigbuffers[i].buf.max_size = USBNET_BUFFER_SIZE;
@@ -55,6 +54,9 @@ usbd_device *usbnet_init(const usbd_driver *driver)
     usbnet_release(&g_usbnet_smallbuffers[i].buf);
   }
 
+  // Preallocate buffer for first incoming packet
+  rx_alloc_buffer(USBNET_USB_PACKET_SIZE);
+  
   g_usbd_dev = usbd_init(driver, &g_device_descriptor, &g_config_descriptor,
         g_usb_strings, USBNET_USB_STRING_COUNT,
         g_usb_temp_buffer, sizeof(g_usb_temp_buffer));
@@ -72,93 +74,16 @@ usbd_device *usbnet_init(const usbd_driver *driver)
  **********************/
 
 static void cdcecm_send_connection_status();
-static void rndis_send_command(uint8_t *buf, uint16_t len);
-static void rndis_get_response(uint8_t **buf, uint16_t *len);
-static void rndis_release_response(usbd_device *usbd_dev, struct usb_setup_data *req);
 static void cdcecm_status_callback(usbd_device *usbd_dev, uint8_t ep);
 static void cdcecm_rx_callback(usbd_device *usbd_dev, uint8_t ep);
 static void cdcecm_tx_callback(usbd_device *usbd_dev, uint8_t ep);
+static int rndis_ctrl_callback(usbd_device *usbd_dev, struct usb_setup_data *req,
+        uint8_t **buf, uint16_t *len, usbd_control_complete_callback *complete);
 static void rndis_rx_callback(usbd_device *usbd_dev, uint8_t ep);
 static void rndis_tx_callback(usbd_device *usbd_dev, uint8_t ep);
 
-static int usbnet_ctrl_callback(usbd_device *usbd_dev, struct usb_setup_data *req,
-        uint8_t **buf, uint16_t *len, usbd_control_complete_callback *complete)
-{
-  dbg("Control bmRequestType=%02x, bRequest=%02x, wValue=%04x, wIndex=%04x, wLength=%04x",
-      (unsigned)req->bmRequestType,
-      (unsigned)req->bRequest, (unsigned)req->wValue, (unsigned)req->wIndex,
-      (unsigned)req->wLength);
-
-  if ((req->bmRequestType & USB_REQ_TYPE_TYPE) == USB_REQ_TYPE_CLASS
-   && (req->bmRequestType & USB_REQ_TYPE_RECIPIENT) == USB_REQ_TYPE_INTERFACE
-   && req->wIndex == RNDIS_INTERFACE)
-  {
-    if (req->bRequest == RNDIS_SEND_ENCAPSULATED_COMMAND)
-    {
-      rndis_send_command(*buf, *len);
-      return USBD_REQ_HANDLED;
-    }
-    else if (req->bRequest == RNDIS_GET_ENCAPSULATED_RESPONSE)
-    {
-      rndis_get_response(buf, len);
-      *complete = rndis_release_response;
-      return USBD_REQ_HANDLED;
-    }
-  }
-  else if ((req->bmRequestType & USB_REQ_TYPE_TYPE) == USB_REQ_TYPE_STANDARD
-        && (req->bmRequestType & USB_REQ_TYPE_RECIPIENT) == USB_REQ_TYPE_DEVICE
-        && req->bRequest == USB_REQ_GET_DESCRIPTOR
-        && req->wValue == 0x03EE)
-  {
-    dbg("Microsoft OS descriptor requested");
-    static const struct {
-      uint8_t bLength;
-      uint8_t bDescriptorType;
-      uint8_t qwSignature[14];
-      uint8_t bMS_VendorCode;
-      uint8_t bPad;
-    } msft_descr = {0x12, 0x03, {'M',0,'S',0,'F',0,'T',0,'1',0,'0',0,'0',0}, 0xEE, 0};
-    *buf = (void*)&msft_descr;
-    if (*len > sizeof(msft_descr)) *len = sizeof(msft_descr);
-    return USBD_REQ_HANDLED;
-  }
-  else if (req->bRequest == 0xEE)
-  {
-    dbg("Microsoft OS function descriptor requested");
-    static const struct {
-      uint32_t dwLength;
-      uint16_t bcdVersion;
-      uint16_t wIndex;
-      uint8_t bCount;
-      uint8_t reserved[7];
-      uint8_t bFirstInterfaceNumber;
-      uint8_t bInterfaceCount;
-      uint8_t compatibleID[8];
-      uint8_t subCompatibleID[8];
-      uint8_t reserved2[6];
-    } msft_descr = {
-      .dwLength = 40,
-      .bcdVersion = 0x0100,
-      .wIndex = 4,
-      .bCount = 1,
-      .bFirstInterfaceNumber = RNDIS_INTERFACE,
-      .bInterfaceCount = 1,
-      .compatibleID = "RNDIS",
-      .subCompatibleID = "5162001"
-    };
-
-    *buf = (void*)&msft_descr;
-    if (*len > sizeof(msft_descr)) *len = sizeof(msft_descr);
-    return USBD_REQ_HANDLED;
-  }
-
-  return USBD_REQ_NEXT_CALLBACK;
-}
-
 static void usbnet_altset_callback(usbd_device *usbd_dev, uint16_t wIndex, uint16_t wValue)
 {
-  printf("Altset %d %d\n", wIndex, wValue);
-
   if (wValue == 1)
   {
     cdcecm_send_connection_status();
@@ -167,8 +92,6 @@ static void usbnet_altset_callback(usbd_device *usbd_dev, uint16_t wIndex, uint1
 
 static void usbnet_set_config(usbd_device *usbd_dev, uint16_t wValue)
 {
-  printf("Config %d\n", wValue);
-
   g_cdcecm_connected = false;
   g_rndis_connected = false;
 
@@ -180,7 +103,10 @@ static void usbnet_set_config(usbd_device *usbd_dev, uint16_t wValue)
   usbd_ep_setup(g_usbd_dev, RNDIS_OUT_EP, USB_ENDPOINT_ATTR_BULK, 64, rndis_rx_callback);
   usbd_ep_setup(g_usbd_dev, RNDIS_IRQ_EP, USB_ENDPOINT_ATTR_INTERRUPT, 8, NULL);
 
-  usbd_register_control_callback(g_usbd_dev, 0, 0, usbnet_ctrl_callback);
+  usbd_register_control_callback(g_usbd_dev,
+                                 USB_REQ_TYPE_CLASS | USB_REQ_TYPE_INTERFACE,
+                                 USB_REQ_TYPE_TYPE | USB_REQ_TYPE_RECIPIENT,
+                                 rndis_ctrl_callback);
 }
 
 
@@ -224,6 +150,64 @@ static size_t list_size(usbnet_buffer_t *list)
     list = list->next;
   }
   return size;
+}
+
+/**************************
+ * Common RX buffer logic *
+ **************************/
+
+static usbnet_buffer_t *g_rx_buffer;
+static bool g_rx_waiting_for_buffer;
+static bool g_rx_discard;
+
+/* Returns true if g_current_rx_buffer is available and can store
+ * atleast size bytes
+ */
+static bool rx_alloc_buffer(size_t size)
+{
+  if (g_rx_buffer && size > USBNET_BUFFER_SIZE)
+  {
+    dbg("Discarding too long packet");
+    g_rx_discard = true;
+    g_rx_buffer->data_size = 0;
+    size = USBNET_USB_PACKET_SIZE;
+  }
+  
+  if (!g_rx_buffer)
+  {
+    if (list_size(g_usbnet_received) < USBNET_MAX_RX_QUEUE)
+    {
+      // Allocate storage for first packet
+      g_rx_buffer = usbnet_allocate(size);
+    }
+  }
+  else if (g_rx_buffer->max_size < size)
+  {
+    // Have to increase buffer size
+    usbnet_buffer_t *newbuf = usbnet_allocate(size);
+    if (newbuf)
+    {
+      memcpy(newbuf->data, g_rx_buffer->data, g_rx_buffer->data_size);
+      newbuf->data_size = g_rx_buffer->data_size;
+      usbnet_release(g_rx_buffer);
+      g_rx_buffer = newbuf;
+    }
+  }
+  
+  bool buf_ok = g_rx_buffer && g_rx_buffer->max_size >= size;
+  g_rx_waiting_for_buffer = !buf_ok;
+  return buf_ok;
+}
+
+static void rx_done()
+{
+  if (!g_rx_discard)
+  {
+    list_append(&g_usbnet_received, g_rx_buffer);
+  }
+  g_rx_discard = false;
+  g_rx_buffer = NULL;
+  rx_alloc_buffer(USBNET_USB_PACKET_SIZE);
 }
 
 /***************************
@@ -273,53 +257,31 @@ static void cdcecm_send_connection_status()
   g_cdcecm_send_connection_status = true;
 }
 
-static size_t g_cdcecm_rx_bytes_received;
-static bool g_cdcecm_rx_waiting_for_buffer;
-static usbnet_buffer_t *g_cdcecm_current_rx_buffer;
+static void cdcecm_continue_rx()
+{
+  size_t current_size = g_rx_buffer ? g_rx_buffer->data_size : 0;
+  bool status = rx_alloc_buffer(current_size + USBNET_USB_PACKET_SIZE);
+  usbd_ep_nak_set(g_usbd_dev, CDCECM_OUT_EP, !status);
+}
 
 static void cdcecm_rx_callback(usbd_device *usbd_dev, uint8_t ep)
 {
-  if (!g_cdcecm_current_rx_buffer)
+  assert(g_rx_buffer);
+  assert(g_rx_buffer->max_size >= g_rx_buffer->data_size + USBNET_USB_PACKET_SIZE);
+  
+  // Set NAK bit until we know whether there is space available for next packet.
+  usbd_ep_nak_set(usbd_dev, ep, true);
+  size_t len = usbd_ep_read_packet(usbd_dev, ep, &g_rx_buffer->data[g_rx_buffer->data_size],
+                                   USBNET_USB_PACKET_SIZE);
+  g_rx_buffer->data_size += len;
+  
+  if (len < USBNET_USB_PACKET_SIZE)
   {
-    /* Beginning of next transfer */
-    if (list_size(g_usbnet_received) < USBNET_MAX_RX_QUEUE)
-    {
-      g_cdcecm_current_rx_buffer = usbnet_allocate(USBNET_BUFFER_SIZE);
-    }
-
-    g_cdcecm_rx_bytes_received = 0;
-    g_cdcecm_rx_waiting_for_buffer = (g_cdcecm_current_rx_buffer == NULL);
+    /* Transfer complete */
+    rx_done();
   }
-
-  if (g_cdcecm_current_rx_buffer)
-  {
-    if (g_cdcecm_rx_bytes_received >= g_cdcecm_current_rx_buffer->max_size)
-    {
-      size_t len = usbd_ep_read_packet(usbd_dev, ep, &g_usb_temp_buffer,
-                                     USBNET_USB_PACKET_SIZE);
-      g_cdcecm_rx_bytes_received += len;
-      if (len < USBNET_USB_PACKET_SIZE)
-      {
-        printf("Discarding too long packet: %d\n", g_cdcecm_rx_bytes_received);
-        usbnet_release(g_cdcecm_current_rx_buffer);
-        g_cdcecm_current_rx_buffer = NULL;
-      }
-    }
-    else
-    {
-      size_t len = usbd_ep_read_packet(usbd_dev, ep, &g_cdcecm_current_rx_buffer->data[g_cdcecm_rx_bytes_received],
-                                      USBNET_USB_PACKET_SIZE);
-      g_cdcecm_rx_bytes_received += len;
-
-      if (len < USBNET_USB_PACKET_SIZE)
-      {
-        /* Transfer complete */
-        g_cdcecm_current_rx_buffer->data_size = g_cdcecm_rx_bytes_received;
-        list_append(&g_usbnet_received, g_cdcecm_current_rx_buffer);
-        g_cdcecm_current_rx_buffer = NULL;
-      }
-    }
-  }
+  
+  cdcecm_continue_rx();
 }
 
 static size_t g_cdcecm_tx_bytes_written;
@@ -328,6 +290,9 @@ static usbnet_buffer_t *g_cdcecm_current_tx_buffer;
 
 static void cdcecm_start_tx()
 {
+  if (!g_cdcecm_connected)
+    return;
+  
   usbnet_buffer_t *buffer = list_popfront(&g_usbnet_transmit_queue);
 
   if (buffer)
@@ -382,18 +347,16 @@ static const uint32_t g_rndis_supported_oids[] = {
   RNDIS_OID_GEN_HARDWARE_STATUS,        /* retval = 0 */
   RNDIS_OID_GEN_MEDIA_SUPPORTED,        /* retval = 0 */
   RNDIS_OID_GEN_MEDIA_IN_USE,           /* retval = 0 */
-//   RNDIS_OID_GEN_MAXIMUM_LOOKAHEAD,      /* retval = 0 */
   RNDIS_OID_GEN_MAXIMUM_FRAME_SIZE,     /* retval = USBNET_BUFFER_SIZE */
   RNDIS_OID_GEN_LINK_SPEED,             /* retval = 100000 = 10 Mbit/s */
   RNDIS_OID_GEN_TRANSMIT_BLOCK_SIZE,    /* retval = USBNET_BUFFER_SIZE */
   RNDIS_OID_GEN_RECEIVE_BLOCK_SIZE,     /* retval = USBNET_BUFFER_SIZE */
   RNDIS_OID_GEN_VENDOR_ID,              
   RNDIS_OID_GEN_VENDOR_DESCRIPTION,
+  RNDIS_OID_GEN_VENDOR_DRIVER_VERSION,  /* retval = 0 */
   RNDIS_OID_GEN_CURRENT_PACKET_FILTER,  /* retval = g_rndis_packet_filter */
   RNDIS_OID_GEN_MAXIMUM_TOTAL_SIZE,     /* retval = 36 + USBNET_BUFFER_SIZE */
-//   RNDIS_OID_GEN_MAC_OPTIONS,
   RNDIS_OID_GEN_MEDIA_CONNECT_STATUS,   /* retval = 0 = connected */
-  RNDIS_OID_GEN_VENDOR_DRIVER_VERSION,  /* retval = 0 */
   RNDIS_OID_GEN_PHYSICAL_MEDIUM,        /* retval = 0 = ethernet */
   RNDIS_OID_GEN_XMIT_OK,                /* retval = g_rndis_host_tx_count */
   RNDIS_OID_GEN_RCV_OK,                 /* retval = g_rndis_host_rx_count */
@@ -403,8 +366,11 @@ static const uint32_t g_rndis_supported_oids[] = {
   RNDIS_OID_802_3_PERMANENT_ADDRESS,    /* retval = g_host_mac_addr */
   RNDIS_OID_802_3_CURRENT_ADDRESS,      /* retval = g_host_mac_addr */
   RNDIS_OID_802_3_MULTICAST_LIST,
-  RNDIS_OID_802_3_MAXIMUM_LIST_SIZE,
   RNDIS_OID_802_3_MAC_OPTIONS,          /* retval = 0 */
+  RNDIS_OID_802_3_MAXIMUM_LIST_SIZE,
+  RNDIS_OID_802_3_RCV_ERROR_ALIGNMENT,
+  RNDIS_OID_802_3_XMIT_ONE_COLLISION,
+  RNDIS_OID_802_3_XMIT_MORE_COLLISIONS,
 };
 
 static const struct {
@@ -413,14 +379,14 @@ static const struct {
   const void *Data;
 } g_rndis_oid_values[] = {
   {RNDIS_OID_GEN_SUPPORTED_LIST, sizeof(g_rndis_supported_oids), g_rndis_supported_oids},
-  {RNDIS_OID_GEN_MAXIMUM_FRAME_SIZE,    4, &(const uint32_t){USBNET_BUFFER_SIZE}},
+  {RNDIS_OID_GEN_MAXIMUM_FRAME_SIZE,    4, &(const uint32_t){1600}},
   {RNDIS_OID_GEN_LINK_SPEED,            4, &(const uint32_t){100000}},
   {RNDIS_OID_GEN_TRANSMIT_BLOCK_SIZE,   4, &(const uint32_t){USBNET_BUFFER_SIZE}},
   {RNDIS_OID_GEN_RECEIVE_BLOCK_SIZE,    4, &(const uint32_t){USBNET_BUFFER_SIZE}},
   {RNDIS_OID_GEN_VENDOR_ID,             4, &(const uint32_t){0x00FFFFFF}},
   {RNDIS_OID_GEN_VENDOR_DESCRIPTION,    5, "DAQ4"},
   {RNDIS_OID_GEN_CURRENT_PACKET_FILTER, 4, &g_rndis_packet_filter},
-  {RNDIS_OID_GEN_MAXIMUM_TOTAL_SIZE,    4, &(const uint32_t){36 + USBNET_BUFFER_SIZE}},
+  {RNDIS_OID_GEN_MAXIMUM_TOTAL_SIZE,    4, &(const uint32_t){2048}},
   {RNDIS_OID_GEN_MAC_OPTIONS,           4,
       &(const uint32_t){RNDIS_MAC_OPTION_RECEIVE_SERIALIZED | RNDIS_MAC_OPTION_FULL_DUPLEX}},
   {RNDIS_OID_GEN_XMIT_OK,               4, &g_rndis_host_tx_count},
@@ -461,20 +427,20 @@ static void rndis_send_command(uint8_t *buf, uint16_t len)
 {
   struct rndis_command_header *request_hdr = (void*)buf;
 
-  dbg("RNDIS request %02x", (unsigned)request_hdr->MessageType);
+//   dbg("RNDIS request %02x", (unsigned)request_hdr->MessageType);
   if (request_hdr->MessageType == RNDIS_MSG_INIT)
   {
     usbnet_buffer_t *respbuf = rndis_prepare_response(sizeof(struct rndis_initialize_cmplt), request_hdr);
     struct rndis_initialize_cmplt *resp = (void*)respbuf->data;
 
-    resp->MajorVersion = 1;
-    resp->MinorVersion = 0;
-    resp->DeviceFlags = 1;
-    resp->Medium = 0;
+    resp->MajorVersion = RNDIS_MAJOR_VERSION;
+    resp->MinorVersion = RNDIS_MINOR_VERSION;
+    resp->DeviceFlags = RNDIS_DF_CONNECTIONLESS;
+    resp->Medium = RNDIS_MEDIUM_802_3;
     resp->MaxPacketsPerTransfer = 1;
     resp->MaxTransferSize = 36 + USBNET_BUFFER_SIZE;
     resp->PacketAlignmentFactor = 2;
-
+    
     rndis_send_response(respbuf);
   }
   else if (request_hdr->MessageType == RNDIS_MSG_HALT)
@@ -483,27 +449,46 @@ static void rndis_send_command(uint8_t *buf, uint16_t len)
   }
   else if (request_hdr->MessageType == RNDIS_MSG_QUERY)
   {
-    usbnet_buffer_t *respbuf = rndis_prepare_response(sizeof(struct rndis_query_cmplt), request_hdr);
+    size_t max_reply_size = sizeof(struct rndis_query_cmplt) + sizeof(g_rndis_supported_oids);
+    usbnet_buffer_t *respbuf = rndis_prepare_response(max_reply_size, request_hdr);
     struct rndis_query_msg *req = (void*)buf;
     struct rndis_query_cmplt *resp = (void*)respbuf->data;
 
-    dbg("RNDIS query %08x", (unsigned)req->ObjectID);
-
-    resp->InformationBufferOffset = 16;
+    resp->InformationBufferOffset = 0;
     resp->InformationBufferLength = 0;
     resp->hdr.Status = RNDIS_STATUS_NOT_SUPPORTED;
     
     for (int i = 0; i < sizeof(g_rndis_oid_values)/sizeof(g_rndis_oid_values[0]); i++)
     {
-      if (g_rndis_oid_values[i].ObjectID == req->ObjectID || g_rndis_oid_values[i].ObjectID == 0)
+      bool match = (g_rndis_oid_values[i].ObjectID == req->ObjectID);
+      
+      if (!match && g_rndis_oid_values[i].ObjectID == 0)
+      {
+        // Check whether to apply the fallback entry
+        for (int j = 0; j < sizeof(g_rndis_supported_oids)/sizeof(uint32_t); j++)
+        {
+          if (g_rndis_supported_oids[j] == req->ObjectID)
+          {
+            match = true;
+            break;
+          }
+        }
+      }
+      
+      if (match)
       {
         resp->hdr.Status = RNDIS_STATUS_SUCCESS;
+        resp->InformationBufferOffset = 16;
         resp->InformationBufferLength = g_rndis_oid_values[i].Length;
         memcpy(resp->Buffer, g_rndis_oid_values[i].Data, resp->InformationBufferLength);
         break;
       }
     }
 
+    dbg("RNDIS Query RID=%08x OID=%08x LEN=%d DAT=%08x", 
+        (unsigned)req->hdr.RequestID, (unsigned)req->ObjectID,
+        (int)resp->InformationBufferLength, (unsigned)resp->Buffer[0]);
+    
     respbuf->data_size += resp->InformationBufferLength;
     resp->hdr.MessageLength += resp->InformationBufferLength;
     
@@ -515,13 +500,15 @@ static void rndis_send_command(uint8_t *buf, uint16_t len)
     struct rndis_set_msg *req = (void*)buf;
     struct rndis_response_header *resp = (void*)respbuf->data;
 
-    dbg("RNDIS set %08x", (unsigned)req->ObjectID);
+    dbg("RNDIS SET RID=%08x OID=%08x LEN=%d DAT=%08x", 
+        (unsigned)req->hdr.RequestID, (unsigned)req->ObjectID,
+        (int)req->InformationBufferLength, (unsigned)req->Buffer[0]);
 
     if (req->ObjectID == RNDIS_OID_GEN_CURRENT_PACKET_FILTER)
     {
       g_rndis_packet_filter = req->Buffer[0];
       g_rndis_connected = (req->Buffer[0] != 0);
-
+      
       dbg("RNDIS connection status: %d", (int)g_rndis_connected);
     }
     else if (req->ObjectID == RNDIS_OID_802_3_MULTICAST_LIST)
@@ -555,7 +542,6 @@ static void rndis_get_response(uint8_t **buf, uint16_t *len)
 {
   if (g_rndis_responses)
   {
-    dbg("RNDIS response sent");
     *len = g_rndis_responses->data_size;
     *buf = g_rndis_responses->data;
   }
@@ -573,86 +559,90 @@ static void rndis_release_response(usbd_device *usbd_dev, struct usb_setup_data 
   }
 }
 
-static size_t g_rndis_rx_bytes_received;
-static size_t g_rndis_rx_transfer_size;
-static size_t g_rndis_rx_frame_offset;
+static int rndis_ctrl_callback(usbd_device *usbd_dev, struct usb_setup_data *req,
+        uint8_t **buf, uint16_t *len, usbd_control_complete_callback *complete)
+{
+  if (req->wIndex == RNDIS_INTERFACE)
+  {
+    if (req->bRequest == RNDIS_SEND_ENCAPSULATED_COMMAND)
+    {
+      rndis_send_command(*buf, *len);
+      return USBD_REQ_HANDLED;
+    }
+    else if (req->bRequest == RNDIS_GET_ENCAPSULATED_RESPONSE)
+    {
+      rndis_get_response(buf, len);
+      *complete = rndis_release_response;
+      return USBD_REQ_HANDLED;
+    }
+  }
+
+  return USBD_REQ_NEXT_CALLBACK;
+}
+
 static size_t g_rndis_rx_frame_size;
-static bool g_rndis_rx_waiting_for_buffer;
-static usbnet_buffer_t *g_rndis_current_rx_buffer;
+
+static void rndis_continue_rx()
+{
+  size_t size = g_rndis_rx_frame_size ? g_rndis_rx_frame_size : USBNET_USB_PACKET_SIZE;
+  bool status = rx_alloc_buffer(size);
+  usbd_ep_nak_set(g_usbd_dev, RNDIS_OUT_EP, !status);
+}
 
 static void rndis_rx_callback(usbd_device *usbd_dev, uint8_t ep)
 {
-  if (g_rndis_rx_bytes_received >= g_rndis_rx_transfer_size)
+  assert(g_rx_buffer);
+  
+  // Set NAK bit until we know whether there is space available for next packet.
+  usbd_ep_nak_set(usbd_dev, ep, true);
+  
+  if (!g_rndis_rx_frame_size)
   {
     /* Start of new transfer */
-    if (!g_rndis_current_rx_buffer)
+    size_t len = usbd_ep_read_packet(usbd_dev, ep, g_rx_buffer->data,
+                                     USBNET_USB_PACKET_SIZE);
+    
+    if (len < 16)
     {
-      if (list_size(g_usbnet_received) < USBNET_MAX_RX_QUEUE)
-      {
-        g_rndis_current_rx_buffer = usbnet_allocate(USBNET_BUFFER_SIZE);
-      }
-
-      g_rndis_rx_waiting_for_buffer = (g_rndis_current_rx_buffer == NULL);
+      /* Ignore zero-length-packet termination */
     }
-
-    if (g_rndis_current_rx_buffer)
+    else
     {
-      size_t len = usbd_ep_read_packet(usbd_dev, ep, g_usb_temp_buffer, USBNET_USB_PACKET_SIZE);
-      struct rndis_packet_msg *hdr = (void*)g_usb_temp_buffer;
-
-      if (len < 16)
+      struct rndis_packet_msg *hdr = (void*)g_rx_buffer->data;
+      if (hdr->MessageType == RNDIS_MSG_PACKET)
       {
-        /* Zero-length-packet termination */
-        usbnet_release(g_rndis_current_rx_buffer);
-        g_rndis_current_rx_buffer = NULL;
-      }
-      else if (hdr->MessageType == RNDIS_MSG_PACKET)
-      {
-        g_rndis_rx_bytes_received = len;
-        g_rndis_rx_transfer_size = hdr->MessageLength;
-        g_rndis_rx_frame_offset = hdr->DataOffset + 8;
         g_rndis_rx_frame_size = hdr->DataLength;
-
-        if (g_rndis_rx_frame_offset < len)
-        {
-          /* Copy the part of packet that is in first buffer already */
-          memcpy(g_rndis_current_rx_buffer->data, &g_usb_temp_buffer[g_rndis_rx_frame_offset],
-                 len - g_rndis_rx_frame_offset);
-        }
+        
+        /* Remove the rndis header from buffer */
+        size_t offset = hdr->DataOffset + 8;
+        g_rx_buffer->data_size = len - offset;
+        memcpy(g_rx_buffer->data, &g_rx_buffer->data[offset], g_rx_buffer->data_size);
       }
       else
       {
-        dbg("RNDIS unknown message %08x", (unsigned)hdr->MessageType);
-        usbnet_release(g_rndis_current_rx_buffer);
-        g_rndis_current_rx_buffer = NULL;
+        dbg("RNDIS unknown packet %08x", (unsigned)hdr->MessageType);
       }
     }
   }
-  else if (g_rndis_rx_bytes_received >= g_rndis_rx_frame_offset &&
-           g_rndis_rx_bytes_received < g_rndis_rx_frame_offset + g_rndis_rx_frame_size)
+  else if (g_rx_buffer->data_size < g_rndis_rx_frame_size)
   {
-    /* Frame contents */
-    size_t position = g_rndis_rx_bytes_received - g_rndis_rx_frame_offset;
-    size_t max_len = g_rndis_rx_transfer_size - g_rndis_rx_bytes_received;
+    size_t max_len = g_rndis_rx_frame_size - g_rx_buffer->data_size;
     if (max_len > USBNET_USB_PACKET_SIZE) max_len = USBNET_USB_PACKET_SIZE;
-    size_t len = usbd_ep_read_packet(usbd_dev, ep, &g_rndis_current_rx_buffer->data[position], max_len);
-
-    g_rndis_rx_bytes_received += len;
-
-    if (position + len >= g_rndis_rx_frame_size)
+    assert(g_rx_buffer->max_size >= g_rx_buffer->data_size + max_len);
+    size_t len = usbd_ep_read_packet(usbd_dev, ep, &g_rx_buffer->data[g_rx_buffer->data_size],
+                                     max_len);
+    g_rx_buffer->data_size += len;
+    
+    if (g_rx_buffer->data_size >= g_rndis_rx_frame_size)
     {
-      /* Frame is complete */
-      g_rndis_current_rx_buffer->data_size = g_rndis_rx_frame_size;
-      list_append(&g_usbnet_received, g_rndis_current_rx_buffer);
-      g_rndis_current_rx_buffer = NULL;
+      g_rx_buffer->data_size = g_rndis_rx_frame_size;
+      g_rndis_rx_frame_size = 0;
       g_rndis_host_tx_count++;
+      rx_done();
     }
   }
-  else
-  {
-    /* Other padding, discard USB packet */
-    g_rndis_rx_bytes_received += usbd_ep_read_packet(usbd_dev, ep, g_usb_temp_buffer, USBNET_USB_PACKET_SIZE);
-  }
+  
+  rndis_continue_rx();
 }
 
 static size_t g_rndis_tx_frame_size;
@@ -662,6 +652,12 @@ static usbnet_buffer_t *g_rndis_current_tx_buffer;
 
 static void rndis_start_tx()
 {
+  if (!g_rndis_connected || g_cdcecm_connected)
+  {
+    // Prefer ECM when both are enabled by the host
+    return;
+  }
+  
   usbnet_buffer_t *buffer = list_popfront(&g_usbnet_transmit_queue);
 
   if (buffer)
@@ -741,6 +737,7 @@ usbnet_buffer_t *usbnet_allocate(size_t size)
   if (result)
   {
     assert(result->max_size >= size);
+    result->data_size = 0;
   }
   else
   {
@@ -778,16 +775,17 @@ usbnet_buffer_t *usbnet_receive()
   CM_ATOMIC_CONTEXT();
   usbnet_buffer_t *result = list_popfront(&g_usbnet_received);
 
-  if (g_cdcecm_rx_waiting_for_buffer)
+  if (g_rx_waiting_for_buffer)
   {
     /* Might be waiting for USBNET_MAX_RX_QUEUE */
-    cdcecm_rx_callback(g_usbd_dev, CDCECM_OUT_EP);
-  }
-
-  if (g_rndis_rx_waiting_for_buffer)
-  {
-    /* Might be waiting for USBNET_MAX_RX_QUEUE */
-    rndis_rx_callback(g_usbd_dev, RNDIS_OUT_EP);
+    if (g_cdcecm_connected)
+    {
+      cdcecm_continue_rx();
+    }
+    else if (g_rndis_connected)
+    {
+      rndis_continue_rx();
+    }
   }
 
   return result;
@@ -806,14 +804,17 @@ void usbnet_release(usbnet_buffer_t *buffer)
     list_append(&g_usbnet_free_small, buffer);
   }
 
-  if (g_cdcecm_rx_waiting_for_buffer)
+  if (g_rx_waiting_for_buffer)
   {
-    cdcecm_rx_callback(g_usbd_dev, CDCECM_OUT_EP);
-  }
-
-  if (g_rndis_rx_waiting_for_buffer)
-  {
-    rndis_rx_callback(g_usbd_dev, RNDIS_OUT_EP);
+    /* Might be waiting for USBNET_MAX_RX_QUEUE */
+    if (g_cdcecm_connected)
+    {
+      cdcecm_continue_rx();
+    }
+    else if (g_rndis_connected)
+    {
+      rndis_continue_rx();
+    }
   }
 }
 

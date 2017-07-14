@@ -19,5 +19,6 @@ extern const char *g_usb_strings[USBNET_USB_STRING_COUNT];
 #define CDCECM_IN_EP  0x85
 
 #define RNDIS_INTERFACE 0
+#define CDCECM_INTERFACE 2
 
 #endif

@@ -1,23 +1,6 @@
 #include "usbnet_descriptors.h"
 #include "cdcecm_std.h"
 
-const struct usb_device_descriptor g_device_descriptor = {
-        .bLength = USB_DT_DEVICE_SIZE,
-        .bDescriptorType = USB_DT_DEVICE,
-        .bcdUSB = 0x0200,
-        .bDeviceClass = USB_CLASS_CDC,
-        .bDeviceSubClass = 0,
-        .bDeviceProtocol = 0,
-        .bMaxPacketSize0 = 64,
-        .idVendor = 0x1d6b,
-        .idProduct = 0x0128,
-        .bcdDevice = 0x0200,
-        .iManufacturer = 1,
-        .iProduct = 2,
-        .iSerialNumber = 3,
-        .bNumConfigurations = 1,
-};
-
 static const struct usb_endpoint_descriptor rndis_irq_endp[] = {{
         .bLength = USB_DT_ENDPOINT_SIZE,
         .bDescriptorType = USB_DT_ENDPOINT,
@@ -98,6 +81,18 @@ static const struct {
          },
 };
 
+
+static const struct usb_iface_assoc_descriptor rndis_assoc = {
+        .bLength = USB_DT_INTERFACE_ASSOCIATION_SIZE,
+        .bDescriptorType = USB_DT_INTERFACE_ASSOCIATION,
+        .bFirstInterface = RNDIS_INTERFACE,
+        .bInterfaceCount = 2,
+        .bFunctionClass = 0xEF,
+        .bFunctionSubClass = 0x04,
+        .bFunctionProtocol = 0x01,
+        .iFunction = 0,
+};
+
 static const struct usb_interface_descriptor rndis_irq_iface[] = {{
         .bLength = USB_DT_INTERFACE_SIZE,
         .bDescriptorType = USB_DT_INTERFACE,
@@ -116,7 +111,7 @@ static const struct usb_interface_descriptor rndis_data_iface[] = {
 {
         .bLength = USB_DT_INTERFACE_SIZE,
         .bDescriptorType = USB_DT_INTERFACE,
-        .bInterfaceNumber = 1,
+        .bInterfaceNumber = RNDIS_INTERFACE + 1,
         .bAlternateSetting = 0,
         .bNumEndpoints = 2,
         .bInterfaceClass = USB_CLASS_DATA,
@@ -125,17 +120,27 @@ static const struct usb_interface_descriptor rndis_data_iface[] = {
         .iInterface = 0,
 
         .endpoint = rndis_data_endp,
-}
+}};
+
+static const struct usb_iface_assoc_descriptor cdcecm_assoc = {
+        .bLength = USB_DT_INTERFACE_ASSOCIATION_SIZE,
+        .bDescriptorType = USB_DT_INTERFACE_ASSOCIATION,
+        .bFirstInterface = CDCECM_INTERFACE,
+        .bInterfaceCount = 2,
+        .bFunctionClass = USB_CLASS_CDC,
+        .bFunctionSubClass = USB_CDC_SUBCLASS_ECM,
+        .bFunctionProtocol = 0x00,
+        .iFunction = 0,
 };
 
 static const struct usb_interface_descriptor cdcecm_irq_iface[] = {{
         .bLength = USB_DT_INTERFACE_SIZE,
         .bDescriptorType = USB_DT_INTERFACE,
-        .bInterfaceNumber = 2,
+        .bInterfaceNumber = CDCECM_INTERFACE,
         .bAlternateSetting = 0,
         .bNumEndpoints = 1,
         .bInterfaceClass = USB_CLASS_CDC,
-        .bInterfaceSubClass = 0, //USB_CDC_SUBCLASS_ECM,
+        .bInterfaceSubClass = USB_CDC_SUBCLASS_ECM,
         .bInterfaceProtocol = 0,
         .iInterface = 0,
 
@@ -149,7 +154,7 @@ static const struct usb_interface_descriptor cdcecm_data_iface[] = {
 {
         .bLength = USB_DT_INTERFACE_SIZE,
         .bDescriptorType = USB_DT_INTERFACE,
-        .bInterfaceNumber = 3,
+        .bInterfaceNumber = CDCECM_INTERFACE + 1,
         .bAlternateSetting = 0,
         .bNumEndpoints = 0,
         .bInterfaceClass = USB_CLASS_DATA,
@@ -177,6 +182,7 @@ static uint8_t g_cdc_ncm_cur_altsetting;
 static const struct usb_interface ifaces[] = {
 {
   .num_altsetting = 1,
+  .iface_assoc = &rndis_assoc,
   .altsetting = rndis_irq_iface,
 },
 {
@@ -185,6 +191,7 @@ static const struct usb_interface ifaces[] = {
 },
 {
   .num_altsetting = 1,
+  .iface_assoc = &cdcecm_assoc,
   .altsetting = cdcecm_irq_iface,
 },
 {
@@ -205,6 +212,23 @@ const struct usb_config_descriptor g_config_descriptor = {
         .bMaxPower = 0x32,
 
         .interface = ifaces,
+};
+
+const struct usb_device_descriptor g_device_descriptor = {
+        .bLength = USB_DT_DEVICE_SIZE,
+        .bDescriptorType = USB_DT_DEVICE,
+        .bcdUSB = 0x0200,
+        .bDeviceClass = 0, /* 0 = Use class info from interface descriptors */
+        .bDeviceSubClass = 0,
+        .bDeviceProtocol = 0,
+        .bMaxPacketSize0 = 64,
+        .idVendor = 0x1d6b,
+        .idProduct = 0x0129,
+        .bcdDevice = 0x0205,
+        .iManufacturer = 1,
+        .iProduct = 2,
+        .iSerialNumber = 3,
+        .bNumConfigurations = 1,
 };
 
 const char *g_usb_strings[USBNET_USB_STRING_COUNT] = {

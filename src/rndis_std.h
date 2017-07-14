@@ -76,6 +76,15 @@ struct rndis_reset_cmplt {
   uint32_t AddressingReset;
 };
 
+struct rndis_indicate_msg {
+  uint32_t MessageType;
+  uint32_t MessageLength;
+  uint32_t Status;
+  uint32_t StatusBufferLength;
+  uint32_t StatusBufferOffset;
+  uint32_t Buffer[];
+};
+
 struct rndis_packet_msg {
   uint32_t MessageType;
   uint32_t MessageLength;
