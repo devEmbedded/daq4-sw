@@ -181,11 +181,14 @@ static void send_router_advertisement(usbnet_buffer_t *packet)
   memset(&response->payload, 0, sizeof(response->payload));
   response->payload.icmp.type = ICMP_TYPE_ROUTER_ADVERTISEMENT;
   response->payload.icmp.code = 0;
-  
+  response->payload.cur_hop_limit = 255;
+  response->payload.router_lifetime = uint16_to_buint16(3600);
+  response->payload.reachable_time = uint32_to_buint32(0xFFFFFFFF);
+  response->payload.retransmit_timer = uint32_to_buint32(4000);
   response->payload.prefix.type = 3;
   response->payload.prefix.length = 4;
   response->payload.prefix.prefix_length = 64;
-  response->payload.prefix.flags = 0x40;
+  response->payload.prefix.flags = 0xC0;
   response->payload.prefix.valid_lifetime = uint32_to_buint32(0xFFFFFFFF);
   response->payload.prefix.preferred_lifetime = uint32_to_buint32(0xFFFFFFFF);
   response->payload.prefix.addr = g_ipv6_local_addr;
