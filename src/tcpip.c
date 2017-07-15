@@ -4,7 +4,7 @@
 #include "tcpip.h"
 #include "usbnet.h"
 
-#if defined(TCPIP_DEBUG)
+#if defined(TCPIP_DEBUG) || 1
 #define dbg(fmt, ...) printf("%15s ("__FILE__ ":%3d): " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
 #else
 #define dbg(fmt, ...)
@@ -123,9 +123,6 @@ static void send_neighbor_advertisement(usbnet_buffer_t *packet)
   
   response->ipv6.payload_length = uint16_to_buint16(sizeof(response->payload));
   response->ipv6.next_header = IP_NEXTHDR_ICMP6;
-  
-  dbg("ADDR %02x%02x::%02x", response->payload.target_addr.bytes[0], response->payload.target_addr.bytes[1], response->payload.target_addr.bytes[15]);
-  
   memset(&response->payload, 0, sizeof(response->payload));
   response->payload.icmp.type = ICMP_TYPE_NEIGHBOR_ADVERTISEMENT;
   response->payload.icmp.code = 0;
@@ -140,7 +137,7 @@ static void send_neighbor_advertisement(usbnet_buffer_t *packet)
   packet->data_size = sizeof(*response);
   usbnet_transmit(packet);
   
-  dbg("Response sent");
+  dbg("Advertisement sent");
 }
 
 static void send_router_advertisement(usbnet_buffer_t *packet)
@@ -203,7 +200,7 @@ static void send_router_advertisement(usbnet_buffer_t *packet)
   packet->data_size = sizeof(*response);
   usbnet_transmit(packet);
   
-  dbg("Response sent");
+  dbg("Advertisement sent");
 }
 
 static void send_ping_reply(usbnet_buffer_t *packet)

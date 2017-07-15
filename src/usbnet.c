@@ -9,7 +9,7 @@
 #include <assert.h>
 #include <libopencm3/cm3/cortex.h>
 
-#if defined(USBNET_DEBUG)
+#if defined(USBNET_DEBUG) || 1
 #define dbg(fmt, ...) printf(__FILE__ ":%3d: " fmt "\n", __LINE__, ##__VA_ARGS__)
 #else
 #define dbg(fmt, ...)
@@ -27,7 +27,7 @@ static usbnet_buffer_t *g_usbnet_free_small;
 static usbnet_buffer_t *g_usbnet_free_big;
 
 static usbd_device *g_usbd_dev;
-static uint8_t g_usb_temp_buffer[512] __attribute__((aligned(4)));
+static uint8_t g_usb_temp_buffer[160] __attribute__((aligned(4)));
 
 static mac_addr_t g_host_mac_addr = {{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}};
 
@@ -165,12 +165,11 @@ static bool g_rx_discard;
  */
 static bool rx_alloc_buffer(size_t size)
 {
-  if (g_rx_buffer && size > USBNET_BUFFER_SIZE)
+  if (g_rx_discard || (g_rx_buffer && size > USBNET_BUFFER_SIZE))
   {
-    dbg("Discarding too long packet");
     g_rx_discard = true;
-    g_rx_buffer->data_size = 0;
-    size = USBNET_USB_PACKET_SIZE;
+    g_rx_waiting_for_buffer = false;
+    return true;
   }
   
   if (!g_rx_buffer)
@@ -199,14 +198,32 @@ static bool rx_alloc_buffer(size_t size)
   return buf_ok;
 }
 
+static uint8_t *rx_buffer_ptr()
+{
+  if (g_rx_discard)
+  {
+    return g_usb_temp_buffer;
+  }
+  else
+  {
+    return &g_rx_buffer->data[g_rx_buffer->data_size];
+  }
+}
+
 static void rx_done()
 {
   if (!g_rx_discard)
   {
     list_append(&g_usbnet_received, g_rx_buffer);
+    g_rx_buffer = NULL;
   }
-  g_rx_discard = false;
-  g_rx_buffer = NULL;
+  else
+  {
+    dbg("Discarding too long packet, size = %d", (int)g_rx_buffer->data_size);
+    usbnet_release(g_rx_buffer);
+    g_rx_buffer = NULL;
+    g_rx_discard = false;
+  }
   rx_alloc_buffer(USBNET_USB_PACKET_SIZE);
 }
 
@@ -267,11 +284,11 @@ static void cdcecm_continue_rx()
 static void cdcecm_rx_callback(usbd_device *usbd_dev, uint8_t ep)
 {
   assert(g_rx_buffer);
-  assert(g_rx_buffer->max_size >= g_rx_buffer->data_size + USBNET_USB_PACKET_SIZE);
+  assert(g_rx_discard || g_rx_buffer->max_size >= g_rx_buffer->data_size + USBNET_USB_PACKET_SIZE);
   
   // Set NAK bit until we know whether there is space available for next packet.
   usbd_ep_nak_set(usbd_dev, ep, true);
-  size_t len = usbd_ep_read_packet(usbd_dev, ep, &g_rx_buffer->data[g_rx_buffer->data_size],
+  size_t len = usbd_ep_read_packet(usbd_dev, ep, rx_buffer_ptr(),
                                    USBNET_USB_PACKET_SIZE);
   g_rx_buffer->data_size += len;
   
@@ -629,7 +646,7 @@ static void rndis_rx_callback(usbd_device *usbd_dev, uint8_t ep)
     size_t max_len = g_rndis_rx_frame_size - g_rx_buffer->data_size;
     if (max_len > USBNET_USB_PACKET_SIZE) max_len = USBNET_USB_PACKET_SIZE;
     assert(g_rx_buffer->max_size >= g_rx_buffer->data_size + max_len);
-    size_t len = usbd_ep_read_packet(usbd_dev, ep, &g_rx_buffer->data[g_rx_buffer->data_size],
+    size_t len = usbd_ep_read_packet(usbd_dev, ep, rx_buffer_ptr(),
                                      max_len);
     g_rx_buffer->data_size += len;
     

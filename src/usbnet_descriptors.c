@@ -53,8 +53,8 @@ static const struct usb_endpoint_descriptor cdcecm_data_endp[] = {{
 
 static const struct {
         struct usb_cdc_header_descriptor header;
-        struct usb_cdc_enfd_descriptor enfd;
         struct usb_cdc_union_descriptor cdc_union;
+        struct usb_cdc_enfd_descriptor enfd;
 } __attribute__((packed)) cdcecm_functional_descriptors = {
         .header = {
                 .bFunctionLength = sizeof(struct usb_cdc_header_descriptor),
@@ -62,23 +62,23 @@ static const struct {
                 .bDescriptorSubtype = USB_CDC_TYPE_HEADER,
                 .bcdCDC = 0x0110,
         },
+        .cdc_union = {
+                .bFunctionLength = sizeof(struct usb_cdc_union_descriptor),
+                .bDescriptorType = CS_INTERFACE,
+                .bDescriptorSubtype = USB_CDC_TYPE_UNION,
+                .bControlInterface = CDCECM_INTERFACE,
+                .bSubordinateInterface0 = CDCECM_INTERFACE+1,
+         },
         .enfd = {
             .bFunctionLength = sizeof(struct usb_cdc_enfd_descriptor),
             .bDescriptorType = CS_INTERFACE,
             .bDescriptorSubtype = USB_CDC_TYPE_ENFD,
             .iMACAddress = 4, // In usb_strings table below
             .bmEthernetStatistics = 0,
-            .wMaxSegmentSize = 1514,
+            .wMaxSegmentSize = 768,
             .wNumberMCFilters = 0,
             .bNumberPowerFilters = 0
         },
-        .cdc_union = {
-                .bFunctionLength = sizeof(struct usb_cdc_union_descriptor),
-                .bDescriptorType = CS_INTERFACE,
-                .bDescriptorSubtype = USB_CDC_TYPE_UNION,
-                .bControlInterface = 2,
-                .bSubordinateInterface0 = 3,
-         },
 };
 
 
@@ -165,7 +165,7 @@ static const struct usb_interface_descriptor cdcecm_data_iface[] = {
 {
         .bLength = USB_DT_INTERFACE_SIZE,
         .bDescriptorType = USB_DT_INTERFACE,
-        .bInterfaceNumber = 3,
+        .bInterfaceNumber = CDCECM_INTERFACE + 1,
         .bAlternateSetting = 1,
         .bNumEndpoints = 2,
         .bInterfaceClass = USB_CLASS_DATA,
@@ -198,7 +198,7 @@ static const struct usb_interface ifaces[] = {
   .num_altsetting = 2,
   .altsetting = cdcecm_data_iface,
   .cur_altsetting = &g_cdc_ncm_cur_altsetting
-}
+},
 };
 
 const struct usb_config_descriptor g_config_descriptor = {
