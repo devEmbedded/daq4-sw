@@ -19,7 +19,7 @@ typedef struct _usbnet_buffer_t {
 } usbnet_buffer_t;
 
 /* Module initialization */
-usbd_device *usbnet_init(const usbd_driver *driver);
+usbd_device *usbnet_init(const usbd_driver *driver, uint32_t serialnumber);
 
 /* Functions below are safe to use from IRQs. */
 

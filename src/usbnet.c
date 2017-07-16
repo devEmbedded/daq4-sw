@@ -3,6 +3,7 @@
 #include "rndis_std.h"
 #include "usbnet_descriptors.h"
 #include "network_std.h"
+#include "tcpip.h"
 #include "board.h"
 #include <stdlib.h>
 #include <stdio.h>
@@ -29,7 +30,7 @@ static usbnet_buffer_t *g_usbnet_free_big;
 static usbd_device *g_usbd_dev;
 static uint8_t g_usb_temp_buffer[160] __attribute__((aligned(4)));
 
-static mac_addr_t g_host_mac_addr = {{0x00, 0x11, 0x22, 0x33, 0x44, 0x55}};
+static mac_addr_t g_rndis_mac_addr;
 
 static bool g_cdcecm_connected;
 static bool g_rndis_connected;
@@ -40,8 +41,42 @@ static bool rx_alloc_buffer(size_t size);
 static void usbnet_set_config(usbd_device *usbd_dev, uint16_t wValue);
 static void usbnet_altset_callback(usbd_device *usbd_dev, uint16_t wIndex, uint16_t wValue);
 
-usbd_device *usbnet_init(const usbd_driver *driver)
+usbd_device *usbnet_init(const usbd_driver *driver, uint32_t serialnumber)
 {
+  /* Initialize MAC addresses */
+  snprintf(g_cdcecm_mac_address, sizeof(g_cdcecm_mac_address),
+           "DE%08XAA", (unsigned)serialnumber);
+  
+  g_rndis_mac_addr.bytes[0] = 0xDE;
+  g_rndis_mac_addr.bytes[1] = (serialnumber >> 24) & 0xFF;
+  g_rndis_mac_addr.bytes[2] = (serialnumber >> 16) & 0xFF;
+  g_rndis_mac_addr.bytes[3] = (serialnumber >>  8) & 0xFF;
+  g_rndis_mac_addr.bytes[4] = (serialnumber >>  0) & 0xFF;
+  g_rndis_mac_addr.bytes[5] = 0xBB;
+  
+  g_local_mac_addr.bytes[0] = 0xDE;
+  g_local_mac_addr.bytes[1] = (serialnumber >> 24) & 0xFF;
+  g_local_mac_addr.bytes[2] = (serialnumber >> 16) & 0xFF;
+  g_local_mac_addr.bytes[3] = (serialnumber >>  8) & 0xFF;
+  g_local_mac_addr.bytes[4] = (serialnumber >>  0) & 0xFF;
+  g_local_mac_addr.bytes[5] = 0xCC;
+  
+  /* Initialize IPv6 address */
+  snprintf(g_usb_device_name, sizeof(g_usb_device_name),
+           "DAQ4 fdde:%04x:%04x::1",
+           (unsigned)(serialnumber >> 16),
+           (unsigned)(serialnumber & 0xFFFF));
+  
+  g_local_ipv6_addr = (ipv6_addr_t){{
+    0xfd, 0xde,
+    (serialnumber >> 24) & 0xFF, (serialnumber >> 16) & 0xFF,
+    (serialnumber >>  8) & 0xFF, (serialnumber >>  0) & 0xFF,
+    0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x01
+  }};
+  
+  /* Initialize memory buffers */
   for (int i = 0; i < USBNET_BUFFER_COUNT; i++)
   {
     *(uint16_t*)&g_usbnet_bigbuffers[i].buf.max_size = USBNET_BUFFER_SIZE;
@@ -57,6 +92,7 @@ usbd_device *usbnet_init(const usbd_driver *driver)
   // Preallocate buffer for first incoming packet
   rx_alloc_buffer(USBNET_USB_PACKET_SIZE);
   
+  /* Initialize USB */
   g_usbd_dev = usbd_init(driver, &g_device_descriptor, &g_config_descriptor,
         g_usb_strings, USBNET_USB_STRING_COUNT,
         g_usb_temp_buffer, sizeof(g_usb_temp_buffer));
@@ -235,22 +271,37 @@ static bool g_cdcecm_send_connection_status;
 
 static void cdcecm_status_callback(usbd_device *usbd_dev, uint8_t ep)
 {
-    if (g_cdcecm_send_connection_status)
-    {
-      // Tell the host that the link is up
-      struct usb_cdc_notification notif_status = {
-          .bmRequestType = 0xA1,
-          .bNotification = USB_CDC_NOTIFY_NETWORK_CONNECTION,
-          .wValue = 1,
-          .wIndex = 0,
-          .wLength = 0
-      };
-      usbd_ep_write_packet(usbd_dev, CDCECM_IRQ_EP, &notif_status, sizeof(notif_status));
+  if (g_rndis_connected && g_cdcecm_send_connection_status)
+  {
+    dbg("RNDIS is already active, inform host that CDCECM is disconnected");
+    struct usb_cdc_notification notif_status = {
+        .bmRequestType = 0xA1,
+        .bNotification = USB_CDC_NOTIFY_NETWORK_CONNECTION,
+        .wValue = 0,
+        .wIndex = 0,
+        .wLength = 0
+    };
+    usbd_ep_write_packet(usbd_dev, CDCECM_IRQ_EP, &notif_status, sizeof(notif_status));
 
-      g_cdcecm_send_connection_status = false;
-      g_cdcecm_connected = true;
-      dbg("CDCECM connection status: %d\n", (int)g_cdcecm_connected);
-    }
+    g_cdcecm_send_connection_status = false;
+    g_cdcecm_connected = false;
+  }
+  else if (g_cdcecm_send_connection_status)
+  {
+    // Tell the host that the link is up
+    struct usb_cdc_notification notif_status = {
+        .bmRequestType = 0xA1,
+        .bNotification = USB_CDC_NOTIFY_NETWORK_CONNECTION,
+        .wValue = 1,
+        .wIndex = 0,
+        .wLength = 0
+    };
+    usbd_ep_write_packet(usbd_dev, CDCECM_IRQ_EP, &notif_status, sizeof(notif_status));
+
+    g_cdcecm_send_connection_status = false;
+    g_cdcecm_connected = true;
+    dbg("CDCECM is now connected.");
+  }
 }
 
 static void cdcecm_send_connection_status()
@@ -408,8 +459,8 @@ static const struct {
       &(const uint32_t){RNDIS_MAC_OPTION_RECEIVE_SERIALIZED | RNDIS_MAC_OPTION_FULL_DUPLEX}},
   {RNDIS_OID_GEN_XMIT_OK,               4, &g_rndis_host_tx_count},
   {RNDIS_OID_GEN_RCV_OK,                4, &g_rndis_host_rx_count},
-  {RNDIS_OID_802_3_PERMANENT_ADDRESS,   6, &g_host_mac_addr},
-  {RNDIS_OID_802_3_CURRENT_ADDRESS,     6, &g_host_mac_addr},
+  {RNDIS_OID_802_3_PERMANENT_ADDRESS,   6, &g_rndis_mac_addr},
+  {RNDIS_OID_802_3_CURRENT_ADDRESS,     6, &g_rndis_mac_addr},
   {RNDIS_OID_802_3_MULTICAST_LIST,      4, &(const uint32_t){0xE0000000}},
   {RNDIS_OID_802_3_MAXIMUM_LIST_SIZE,   4, &(const uint32_t){1}},
   {0x0,                                 4, &(const uint32_t){0}}, /* Default fallback */
@@ -524,9 +575,16 @@ static void rndis_send_command(uint8_t *buf, uint16_t len)
     if (req->ObjectID == RNDIS_OID_GEN_CURRENT_PACKET_FILTER)
     {
       g_rndis_packet_filter = req->Buffer[0];
-      g_rndis_connected = (req->Buffer[0] != 0);
       
-      dbg("RNDIS connection status: %d", (int)g_rndis_connected);
+      if (req->Buffer[0] == 0)
+      {
+        g_rndis_connected = false;
+      }
+      else if (!g_cdcecm_connected)
+      {
+        dbg("RNDIS is now connected");
+        g_rndis_connected = true;
+      }
     }
     else if (req->ObjectID == RNDIS_OID_802_3_MULTICAST_LIST)
     {
@@ -669,9 +727,8 @@ static usbnet_buffer_t *g_rndis_current_tx_buffer;
 
 static void rndis_start_tx()
 {
-  if (!g_rndis_connected || g_cdcecm_connected)
+  if (!g_rndis_connected)
   {
-    // Prefer ECM when both are enabled by the host
     return;
   }
   

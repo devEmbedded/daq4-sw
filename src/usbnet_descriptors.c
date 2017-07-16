@@ -231,9 +231,12 @@ const struct usb_device_descriptor g_device_descriptor = {
         .bNumConfigurations = 1,
 };
 
+char g_usb_device_name[32];
+char g_cdcecm_mac_address[13];
+
 const char *g_usb_strings[USBNET_USB_STRING_COUNT] = {
         "devEmbedded",
-        "DAQ4",
-        "SEsRsLN3UdM",
-        "001122334455"
+        g_usb_device_name,
+        g_cdcecm_mac_address, /* Serial number */
+        g_cdcecm_mac_address /* MAC address for CDC ECM */
 };

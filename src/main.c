@@ -13,7 +13,7 @@ int main(void)
   
   printf("Boot!\n");
   
-  usbd_dev = usbnet_init(&st_usbfs_v2_usb_driver);
+  usbd_dev = usbnet_init(&st_usbfs_v2_usb_driver, 0xD4000001);
   
   while (1)
   {

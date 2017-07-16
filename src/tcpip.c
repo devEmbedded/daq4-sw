@@ -4,21 +4,14 @@
 #include "tcpip.h"
 #include "usbnet.h"
 
-#if defined(TCPIP_DEBUG) || 1
+#if defined(TCPIP_DEBUG)
 #define dbg(fmt, ...) printf("%15s ("__FILE__ ":%3d): " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
 #else
 #define dbg(fmt, ...)
 #endif
 
-ipv6_addr_t g_ipv6_local_addr = {
-  {0xfd, 0xde, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x00,
-   0x00, 0x00, 0x00, 0x01}};
-  
-mac_addr_t g_mac_local_addr = {
-  {0x00, 0x11, 0x22, 0x33, 0x44, 0x56}
-};
+ipv6_addr_t g_local_ipv6_addr;
+mac_addr_t g_local_mac_addr;
 
 static uint32_t ipsum(void *data, size_t length)
 {
@@ -54,6 +47,18 @@ static buint16_t icmp_checksum(ipv6_header_t *hdr)
   return foldsum(sum);
 }
 
+static bool is_our_address(ipv6_addr_t addr)
+{
+  if (memcmp(&addr, &g_local_ipv6_addr, sizeof(addr)) == 0)
+    return true;
+  
+  ipv6_addr_t link_addr = IPV6_LINK_LOCAL_ADDR(g_local_mac_addr);
+  if (memcmp(&addr, &link_addr, sizeof(addr)) == 0)
+    return true;
+  
+  return false;
+}
+
 static void prepare_multicast_headers(usbnet_buffer_t *packet)
 {
   struct {
@@ -61,12 +66,12 @@ static void prepare_multicast_headers(usbnet_buffer_t *packet)
     ipv6_header_t ipv6;
   } *response = (void*)packet->data;
   
-  response->eth.mac_src = g_mac_local_addr;
+  response->eth.mac_src = g_local_mac_addr;
   response->eth.mac_dest = MAC_BROADCAST;
   response->eth.ethertype = uint16_to_buint16(ETHERTYPE_IPV6);
   response->ipv6.version_and_class = IPV6_VERSION_CLASS;
   response->ipv6.hop_limit = IPV6_HOP_LIMIT;
-  response->ipv6.source = g_ipv6_local_addr;
+  response->ipv6.source = g_local_ipv6_addr;
   response->ipv6.dest = IPV6_ALL_NODES_MULTICAST;
 }
 
@@ -78,18 +83,17 @@ static void prepare_reply_headers(usbnet_buffer_t *packet)
   } *response = (void*)packet->data;
   
   response->eth.mac_dest = response->eth.mac_src;
-  response->eth.mac_src = g_mac_local_addr;
+  response->eth.mac_src = g_local_mac_addr;
   response->eth.ethertype = uint16_to_buint16(ETHERTYPE_IPV6);
   response->ipv6.version_and_class = IPV6_VERSION_CLASS;
   response->ipv6.hop_limit = IPV6_HOP_LIMIT;
   response->ipv6.dest = response->ipv6.source;
-  response->ipv6.source = g_ipv6_local_addr;
+  response->ipv6.source = g_local_ipv6_addr;
 }
 
 static void send_neighbor_advertisement(usbnet_buffer_t *packet)
 {
-  bool solicited = packet;
-  ipv6_addr_t target_addr = g_ipv6_local_addr;
+  bool solicited = (packet != NULL);
   
   struct {
     ethernet_header_t eth;
@@ -116,9 +120,17 @@ static void send_neighbor_advertisement(usbnet_buffer_t *packet)
   
   response = (void*)packet->data;
   
+  if (solicited && !is_our_address(response->payload.target_addr))
+  {
+    dbg("Request was not for us.");
+    usbnet_release(packet);
+    return;
+  }
+  
+  ipv6_addr_t target_addr = g_local_ipv6_addr;
   if (solicited && response->payload.target_addr.bytes[0] == 0xfe)
   {
-    target_addr = IPV6_LINK_LOCAL_ADDR(g_mac_local_addr);
+    target_addr = IPV6_LINK_LOCAL_ADDR(g_local_mac_addr);
   }
   
   response->ipv6.payload_length = uint16_to_buint16(sizeof(response->payload));
@@ -130,7 +142,7 @@ static void send_neighbor_advertisement(usbnet_buffer_t *packet)
   response->payload.target_addr = target_addr;
   response->payload.opt.type = 2;
   response->payload.opt.length = 1;
-  response->payload.opt.addr = g_mac_local_addr;
+  response->payload.opt.addr = g_local_mac_addr;
   
   response->payload.icmp.checksum = icmp_checksum(&response->ipv6);
   
@@ -173,7 +185,7 @@ static void send_router_advertisement(usbnet_buffer_t *packet)
   
   response->ipv6.payload_length = uint16_to_buint16(sizeof(response->payload));
   response->ipv6.next_header = IP_NEXTHDR_ICMP6;
-  response->ipv6.source = IPV6_LINK_LOCAL_ADDR(g_mac_local_addr);
+  response->ipv6.source = IPV6_LINK_LOCAL_ADDR(g_local_mac_addr);
   
   memset(&response->payload, 0, sizeof(response->payload));
   response->payload.icmp.type = ICMP_TYPE_ROUTER_ADVERTISEMENT;
@@ -188,7 +200,7 @@ static void send_router_advertisement(usbnet_buffer_t *packet)
   response->payload.prefix.flags = 0xC0;
   response->payload.prefix.valid_lifetime = uint32_to_buint32(0xFFFFFFFF);
   response->payload.prefix.preferred_lifetime = uint32_to_buint32(0xFFFFFFFF);
-  response->payload.prefix.addr = g_ipv6_local_addr;
+  response->payload.prefix.addr = g_local_ipv6_addr;
   memset(&response->payload.prefix.addr.bytes[8], 0, 8);
   
   response->payload.mtu.type = 5;
@@ -242,7 +254,7 @@ static void handle_icmp6(usbnet_buffer_t *packet)
   {
     send_router_advertisement(packet);
   }
-  else if (hdr->icmp.type == ICMP_TYPE_ECHO_REQUEST)
+  else if (hdr->icmp.type == ICMP_TYPE_ECHO_REQUEST && is_our_address(hdr->ipv6.dest))
   {
     send_ping_reply(packet);
   }
