@@ -83,6 +83,11 @@ typedef struct {
     buint16_t urgent_pointer;
 } tcp_header_t;
 
+#define TCPIP_CONTROL_ACK 0x0010
+#define TCPIP_CONTROL_RST 0x0004
+#define TCPIP_CONTROL_SYN 0x0002
+#define TCPIP_CONTROL_FIN 0x0001
+
 /* RFC4443 ICMP6 header */
 typedef struct {
   uint8_t type;
@@ -120,20 +125,26 @@ typedef struct {
 #define IPV6_VERSION_CLASS (buint32_t){{{0x60, 0x00, 0x00, 0x00}}}
 #define IPV6_HOP_LIMIT 255
 
+#define IPV6_NULL_ADDRESS (ipv6_addr_t){{0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0}}
 #define IPV6_ALL_NODES_MULTICAST (ipv6_addr_t){{0xFF,0x02,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1}}
+#define MAC_NULL (mac_addr_t){{0, 0, 0, 0, 0, 0}}
 #define MAC_BROADCAST (mac_addr_t){{0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF}}
 
 #define IPV6_LINK_LOCAL_ADDR(mac) \
   (ipv6_addr_t){{0xFE,0x80,0,0, 0,0,0,0, 0,0,mac.bytes[0],mac.bytes[1], mac.bytes[2],mac.bytes[3],mac.bytes[4],mac.bytes[5]}}
 
 #define IP_NEXTHDR_ICMP6 58
+#define IP_NEXTHDR_TCP 6
 
+#define ICMP_TYPE_UNREACHABLE               1
 #define ICMP_TYPE_ECHO_REQUEST            128
 #define ICMP_TYPE_ECHO_REPLY              129
 #define ICMP_TYPE_ROUTER_SOLICITATION     133
 #define ICMP_TYPE_ROUTER_ADVERTISEMENT    134
 #define ICMP_TYPE_NEIGHBOR_SOLICITATION   135
 #define ICMP_TYPE_NEIGHBOR_ADVERTISEMENT  136
+
+#define ICMP_CODE_PORT_UNREACHABLE        4
 
 #pragma pack(pop)
 

@@ -10,7 +10,7 @@
 #include <assert.h>
 #include <libopencm3/cm3/cortex.h>
 
-#if defined(USBNET_DEBUG) || 1
+#if defined(USBNET_DEBUG)
 #define dbg(fmt, ...) printf(__FILE__ ":%3d: " fmt "\n", __LINE__, ##__VA_ARGS__)
 #else
 #define dbg(fmt, ...)
@@ -361,6 +361,7 @@ static void cdcecm_start_tx()
   if (!g_cdcecm_connected)
     return;
   
+  assert(!g_cdcecm_current_tx_buffer);
   usbnet_buffer_t *buffer = list_popfront(&g_usbnet_transmit_queue);
 
   if (buffer)
@@ -390,6 +391,7 @@ static void cdcecm_tx_callback(usbd_device *usbd_dev, uint8_t ep)
     if (len < USBNET_USB_PACKET_SIZE)
     {
       /* Buffer can be released now */
+//       printf("CDC ECM sent %d bytes\n", (int)g_cdcecm_current_tx_buffer->data_size);
       usbnet_release(g_cdcecm_current_tx_buffer);
       g_cdcecm_current_tx_buffer = NULL;
     }
@@ -493,6 +495,7 @@ static void rndis_send_response(usbnet_buffer_t *response)
 
 static void rndis_send_command(uint8_t *buf, uint16_t len)
 {
+  return;
   struct rndis_command_header *request_hdr = (void*)buf;
 
 //   dbg("RNDIS request %02x", (unsigned)request_hdr->MessageType);
@@ -703,7 +706,7 @@ static void rndis_rx_callback(usbd_device *usbd_dev, uint8_t ep)
   {
     size_t max_len = g_rndis_rx_frame_size - g_rx_buffer->data_size;
     if (max_len > USBNET_USB_PACKET_SIZE) max_len = USBNET_USB_PACKET_SIZE;
-    assert(g_rx_buffer->max_size >= g_rx_buffer->data_size + max_len);
+    assert(g_rx_discard || g_rx_buffer->max_size >= g_rx_buffer->data_size + max_len);
     size_t len = usbd_ep_read_packet(usbd_dev, ep, rx_buffer_ptr(),
                                      max_len);
     g_rx_buffer->data_size += len;
@@ -732,6 +735,7 @@ static void rndis_start_tx()
     return;
   }
   
+  assert(!g_rndis_current_tx_buffer);
   usbnet_buffer_t *buffer = list_popfront(&g_usbnet_transmit_queue);
 
   if (buffer)
@@ -770,6 +774,7 @@ static void rndis_tx_callback(usbd_device *usbd_dev, uint8_t ep)
     if (g_rndis_tx_bytes_written >= g_rndis_tx_frame_size)
     {
       /* Buffer can be released now */
+      printf("RNDIS sent frame len=%d\n", (int)g_rndis_tx_frame_size);
       usbnet_release(g_rndis_current_tx_buffer);
       g_rndis_current_tx_buffer = NULL;
       g_rndis_host_rx_count++;
@@ -815,7 +820,7 @@ usbnet_buffer_t *usbnet_allocate(size_t size)
   }
   else
   {
-    dbg("No buffers left, trying to allocate %d bytes", (int)size);
+    printf("No buffers left, trying to allocate %d bytes\n", (int)size);
   }
 
   return result;
