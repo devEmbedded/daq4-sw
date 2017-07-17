@@ -5,7 +5,7 @@
 #include "usbnet.h"
 
 #define TCPIP_HEADER_SIZE (14+40+20)
-#define TCP_WINDOW_SIZE 690
+#define TCP_WINDOW_SIZE 16384
 
 extern ipv6_addr_t g_local_ipv6_addr;
 extern mac_addr_t g_local_mac_addr;
@@ -31,7 +31,7 @@ typedef struct _tcpip_conn_t {
   uint16_t local_port;
   uint32_t tx_sequence;
   uint32_t rx_sequence;
-  uint16_t control;
+  uint32_t last_ack_sent;
   void *context; /* Context pointer for use by other modules */
 } tcpip_conn_t;
 

@@ -16,6 +16,8 @@
 #define dbg(fmt, ...)
 #endif
 
+#define warn(fmt, ...) printf(__FILE__ ":%3d: [WARN] " fmt "\n", __LINE__, ##__VA_ARGS__)
+
 /******************
  * Initialization *
  ******************/
@@ -248,6 +250,13 @@ static uint8_t *rx_buffer_ptr()
 
 static void rx_done()
 {
+  if (g_rx_discard && g_rx_buffer->data_size <= USBNET_BUFFER_SIZE + 1)
+  {
+    // The discard bit got set just because of the ZLP termination packet
+    g_rx_buffer->data_size = USBNET_BUFFER_SIZE;
+    g_rx_discard = false;
+  }
+  
   if (!g_rx_discard)
   {
     list_append(&g_usbnet_received, g_rx_buffer);
@@ -255,7 +264,7 @@ static void rx_done()
   }
   else
   {
-    dbg("Discarding too long packet, size = %d", (int)g_rx_buffer->data_size);
+    warn("Discarding too long packet, size = %d", (int)g_rx_buffer->data_size);
     usbnet_release(g_rx_buffer);
     g_rx_buffer = NULL;
     g_rx_discard = false;
@@ -391,7 +400,6 @@ static void cdcecm_tx_callback(usbd_device *usbd_dev, uint8_t ep)
     if (len < USBNET_USB_PACKET_SIZE)
     {
       /* Buffer can be released now */
-//       printf("CDC ECM sent %d bytes\n", (int)g_cdcecm_current_tx_buffer->data_size);
       usbnet_release(g_cdcecm_current_tx_buffer);
       g_cdcecm_current_tx_buffer = NULL;
     }
@@ -774,7 +782,6 @@ static void rndis_tx_callback(usbd_device *usbd_dev, uint8_t ep)
     if (g_rndis_tx_bytes_written >= g_rndis_tx_frame_size)
     {
       /* Buffer can be released now */
-      printf("RNDIS sent frame len=%d\n", (int)g_rndis_tx_frame_size);
       usbnet_release(g_rndis_current_tx_buffer);
       g_rndis_current_tx_buffer = NULL;
       g_rndis_host_rx_count++;
@@ -820,7 +827,7 @@ usbnet_buffer_t *usbnet_allocate(size_t size)
   }
   else
   {
-    printf("No buffers left, trying to allocate %d bytes\n", (int)size);
+    warn("No buffers left, trying to allocate %d bytes", (int)size);
   }
 
   return result;
@@ -838,7 +845,7 @@ void usbnet_transmit(usbnet_buffer_t *buffer)
 
   if (g_rndis_tx_waiting_for_frame && g_rndis_connected)
   {
-    rndis_start_tx();
+//     rndis_start_tx();
   }
 }
 

@@ -87,6 +87,7 @@ typedef struct {
 #define TCPIP_CONTROL_RST 0x0004
 #define TCPIP_CONTROL_SYN 0x0002
 #define TCPIP_CONTROL_FIN 0x0001
+#define TCPIP_CONTROL_MASK 0x0FFF
 
 /* RFC4443 ICMP6 header */
 typedef struct {
