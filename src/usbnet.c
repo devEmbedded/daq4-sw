@@ -4,7 +4,7 @@
 #include "usbnet_descriptors.h"
 #include "network_std.h"
 #include "tcpip.h"
-#include "board.h"
+#include "systime.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <assert.h>

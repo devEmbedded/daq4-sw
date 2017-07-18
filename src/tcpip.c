@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stddef.h>
 #include <assert.h>
-#include "board.h"
+#include "systime.h"
 #include "tcpip.h"
 #include "usbnet.h"
 
@@ -356,6 +356,7 @@ void tcpip_init_listener(tcpip_conn_t *conn, uint16_t port, tcpip_callback_t cal
   conn->tx_sequence = 0;
   conn->rx_sequence = 0;
   conn->last_ack_sent = 0;
+  conn->last_ack_received = 0;
   
   dbg("TCP: listening on %d", port);
   list_append(&g_tcpip_listeners, conn);
@@ -501,6 +502,7 @@ static void handle_tcp_syn(usbnet_buffer_t *packet)
       conn->peer_port = buint16_to_uint16(hdr->tcp.source_port);
       conn->rx_sequence = buint32_to_uint32(hdr->tcp.sequence) + 1;
       conn->tx_sequence = conn->rx_sequence + get_systime();
+      conn->last_ack_received = conn->tx_sequence;
       packet->data_size = TCPIP_HEADER_SIZE;
       tcpip_send_ctrl(conn, packet, TCPIP_CONTROL_SYN | TCPIP_CONTROL_ACK);
       conn->tx_sequence++;
@@ -555,6 +557,7 @@ static void handle_tcp_active(usbnet_buffer_t *packet)
           return;
         }
         
+        conn->last_ack_received = buint32_to_uint32(hdr->tcp.ack);
         
         dbg("TCP data len=%d to port=%d", (int)data_len, conn->local_port);
         conn->rx_sequence += data_len;
@@ -584,7 +587,7 @@ static void handle_tcp_active(usbnet_buffer_t *packet)
     conn = conn->next;
   }
   
-  if ((control & TCPIP_CONTROL_MASK) == TCPIP_CONTROL_ACK && data_len == 0)
+  if ((control & TCPIP_CONTROL_ACK) && data_len == 0)
   {
     // Probably just ACK to FIN-ACK, ignore
     usbnet_release(packet);
@@ -609,6 +612,13 @@ static void tcp_poll()
     {
       // Ack the received data so far
       tcpip_send(conn, NULL);
+    }
+    
+    if (conn->state == TCPIP_ESTABLISHED
+        && conn->tx_sequence > conn->last_ack_received + 2 * TCP_WINDOW_SIZE)
+    {
+      warn("TCP closing connection due to not getting ACKs");
+      tcpip_close(conn);
     }
     
     conn = next;

@@ -32,6 +32,7 @@ typedef struct _tcpip_conn_t {
   uint32_t tx_sequence;
   uint32_t rx_sequence;
   uint32_t last_ack_sent;
+  uint32_t last_ack_received;
   void *context; /* Context pointer for use by other modules */
 } tcpip_conn_t;
 
