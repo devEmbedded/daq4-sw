@@ -158,6 +158,8 @@ void http_start_response(tcpip_conn_t* conn, int status,
                     body_len, body_data);
       
       conn->context[TCPIP_CONTEXT_WORDS-1] = 0;
+      
+      dbg("HTTP response_done, len = %d", body_len);
     }
     else
     {
@@ -167,6 +169,11 @@ void http_start_response(tcpip_conn_t* conn, int status,
                              "%s\r\n",
                     body_len, body_data);
     }
+  }
+  else
+  {
+    buffer_printf(payload, "Transfer-Encoding: chunked\r\n"
+                           "\r\n");
   }
   
   tcpip_send(conn, payload);
@@ -195,7 +202,8 @@ void http_send_chunk(tcpip_conn_t* conn, buffer_t* chunk)
   size_t chunklen = chunk->data_size;
   buffer_t *outer = buffer_unslice(chunk, HTTP_CHUNK_HEADER_SIZE, HTTP_CHUNK_TRAILER_SIZE);
   
-  snprintf((char*)&outer->data[0], HTTP_CHUNK_HEADER_SIZE, "%08x\r\n", chunklen);
+  snprintf((char*)&outer->data[0], HTTP_CHUNK_HEADER_SIZE, "%08x\r", chunklen);
+  outer->data[9] = '\n';
   outer->data[outer->data_size - 2] = '\r';
   outer->data[outer->data_size - 1] = '\n';
   tcpip_send(conn, outer);
@@ -203,6 +211,8 @@ void http_send_chunk(tcpip_conn_t* conn, buffer_t* chunk)
 
 void http_send_last_chunk(tcpip_conn_t* conn)
 {
+  dbg("HTTP finishing response");
+  
   buffer_t *payload = tcpip_allocate(5);
   if (!payload)
   {
