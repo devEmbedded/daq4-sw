@@ -5,15 +5,9 @@
 #include <assert.h>
 #include "http.h"
 
-#if defined(HTTP_DEBUG) || 1
-#define dbg(fmt, ...) printf(__FILE__ ":%3d: " fmt "\n", __LINE__, ##__VA_ARGS__)
-#else
-#define dbg(fmt, ...)
-#endif
+#define DEBUG
+#include "debug.h"
 
-#define warn(fmt, ...) printf(__FILE__ ":%3d: [WARN] " fmt "\n", __LINE__, ##__VA_ARGS__)
-
-static tcpip_conn_t g_http_conns[HTTP_MAX_CONNECTIONS];
 static http_url_handler_t *g_http_url_handlers;
 
 static void http_dispatch(tcpip_conn_t *conn, http_request_t *request)
@@ -23,7 +17,7 @@ static void http_dispatch(tcpip_conn_t *conn, http_request_t *request)
   {
     if (strcmp(handler->url, request->url) == 0)
     {
-      conn->context = handler->callback;
+      conn->context[TCPIP_CONTEXT_WORDS-1] = (uint32_t)handler->callback;
       handler->callback(conn, request);
       return;
     }
@@ -31,15 +25,14 @@ static void http_dispatch(tcpip_conn_t *conn, http_request_t *request)
     handler = handler->next;
   }
   
-  http_start_response(conn, 404, "text/plain", "Not found");
-  http_end_response(conn);
+  http_start_response(conn, 404, "text/plain", "Not found", true);
 }
 
-static bool handle_new_request(tcpip_conn_t *conn, usbnet_buffer_t *packet)
+static bool handle_new_request(tcpip_conn_t *conn, buffer_t *payload)
 {
   http_request_t request = {};
-  char *p = (char*)&packet->data[TCPIP_HEADER_SIZE];
-  char *end = (char*)&packet->data[packet->data_size];
+  char *p = (char*)(payload->data);
+  char *end = (char*)(payload->data + payload->data_size);
   
   /* Parse method */
   while (isspace(*p)) p++;
@@ -55,8 +48,7 @@ static bool handle_new_request(tcpip_conn_t *conn, usbnet_buffer_t *packet)
   }
   else
   {
-    http_start_response(conn, 400, "text/plain", "Unknown method");
-    http_end_response(conn);
+    http_start_response(conn, 400, "text/plain", "Unknown method", true);
     return true;
   }
     
@@ -99,18 +91,18 @@ static bool handle_new_request(tcpip_conn_t *conn, usbnet_buffer_t *packet)
   return true;
 }
 
-static void handle_http_connection(tcpip_conn_t *conn, usbnet_buffer_t *packet)
+static void handle_http_connection(tcpip_conn_t *conn, buffer_t *payload)
 {
-  http_callback_t callback = (http_callback_t)conn->context;
+  http_callback_t callback = (http_callback_t)conn->context[TCPIP_CONTEXT_WORDS - 1];
   
   if (conn->state == TCPIP_ESTABLISHED)
   {
     if (!callback)
     {
-      if (packet)
+      if (payload)
       {
-        bool status = handle_new_request(conn, packet);
-        usbnet_release(packet);
+        bool status = handle_new_request(conn, payload);
+        tcpip_release(payload);
         if (!status)
         {
           warn("HTTP closing after invalid request");
@@ -123,18 +115,11 @@ static void handle_http_connection(tcpip_conn_t *conn, usbnet_buffer_t *packet)
       callback(conn, NULL);
     }
   }
-  else
-  {
-    conn->context = NULL;
-  }
 }
 
 void http_init()
 {
-  for (int i = 0; i < HTTP_MAX_CONNECTIONS; i++)
-  {
-    tcpip_init_listener(&g_http_conns[i], 80, &handle_http_connection);
-  }
+  tcpip_register_listener(80, handle_http_connection);
 }
 
 void http_add_url_handler(http_url_handler_t* handler)
@@ -144,65 +129,92 @@ void http_add_url_handler(http_url_handler_t* handler)
 }
 
 void http_start_response(tcpip_conn_t* conn, int status,
-                         const char *mime_type, const char* body_data)
+                         const char *mime_type, const char* body_data,
+                         bool response_done)
 {
   dbg("HTTP starting response, status=%d", status);
   
   size_t body_len = strlen(body_data);
-  usbnet_buffer_t *packet = usbnet_allocate(256 + body_len);
-  if (!packet)
+  buffer_t *payload = tcpip_allocate(256 + body_len);
+  if (!payload)
   {
+    warn("HTTP could not allocate buffer for response");
     tcpip_close(conn);
     return;
   }
   
-  packet->data_size = TCPIP_HEADER_SIZE;
-  packet->data_size += snprintf((char*)&packet->data[packet->data_size],
-                               packet->max_size - packet->data_size,
-                               "HTTP/1.1 %d %s\r\n"
-                               "Content-Type: %s\r\n"
-                               "Transfer-Encoding: chunked\r\n"
-                               "Connection: keep-alive\r\n"
-                               "\r\n",
-                              status, (status == 200) ? "OK" : "Error",
-                              mime_type);
+  buffer_printf(payload, "HTTP/1.1 %d %s\r\n"
+                         "Content-Type: %s\r\n"
+                         "Connection: keep-alive\r\n",
+                         status, (status == 200) ? "OK" : "Error", mime_type);
   
   if (body_len)
   {
-    packet->data_size += snprintf((char*)&packet->data[packet->data_size],
-                                  packet->max_size - packet->data_size,
-                                  "%08x\r\n"
-                                  "%s\r\n",
-                                  body_len, body_data);
+    if (response_done)
+    {
+      buffer_printf(payload, "Content-Length: %d\r\n"
+                             "\r\n"
+                             "%s\r\n",
+                    body_len, body_data);
+      
+      conn->context[TCPIP_CONTEXT_WORDS-1] = 0;
+    }
+    else
+    {
+      buffer_printf(payload, "Transfer-Encoding: chunked\r\n"
+                             "\r\n"
+                             "%08x\r\n"
+                             "%s\r\n",
+                    body_len, body_data);
+    }
   }
   
-  tcpip_send(conn, packet);
+  tcpip_send(conn, payload);
 }
 
-void http_send_chunk(tcpip_conn_t* conn, usbnet_buffer_t* packet)
+buffer_t *http_allocate_chunk(size_t size)
 {
-  assert(packet->data_size >= HTTP_HEADER_SIZE);
+  buffer_t *outer = tcpip_allocate(HTTP_CHUNK_HEADER_SIZE + size + HTTP_CHUNK_TRAILER_SIZE);
+  if (outer)
+  {
+    return buffer_slice(outer, HTTP_CHUNK_HEADER_SIZE, HTTP_CHUNK_TRAILER_SIZE);
+  }
+  else
+  {
+    return NULL;
+  }
+}
+
+void http_release_chunk(buffer_t* chunk)
+{
+  tcpip_release(buffer_unslice(chunk, HTTP_CHUNK_HEADER_SIZE, HTTP_CHUNK_TRAILER_SIZE));
+}
+
+void http_send_chunk(tcpip_conn_t* conn, buffer_t* chunk)
+{
+  size_t chunklen = chunk->data_size;
+  buffer_t *outer = buffer_unslice(chunk, HTTP_CHUNK_HEADER_SIZE, HTTP_CHUNK_TRAILER_SIZE);
   
-  size_t body_len = packet->data_size - HTTP_HEADER_SIZE;
-  snprintf((char*)&packet->data[TCPIP_HEADER_SIZE], 10, "%08x\r\n", body_len);
-  packet->data[packet->data_size++] = '\r';
-  packet->data[packet->data_size++] = '\n';
-  tcpip_send(conn, packet);
+  snprintf((char*)&outer->data[0], HTTP_CHUNK_HEADER_SIZE, "%08x\r\n", chunklen);
+  outer->data[outer->data_size - 2] = '\r';
+  outer->data[outer->data_size - 1] = '\n';
+  tcpip_send(conn, outer);
 }
 
-void http_end_response(tcpip_conn_t* conn)
+void http_send_last_chunk(tcpip_conn_t* conn)
 {
-  usbnet_buffer_t *packet = usbnet_allocate(HTTP_HEADER_SIZE + 2);
-  if (!packet)
+  buffer_t *payload = tcpip_allocate(5);
+  if (!payload)
   {
     tcpip_close(conn);
     return;
   }
   
-  packet->data_size = TCPIP_HEADER_SIZE + 5;
-  memcpy(&packet->data[TCPIP_HEADER_SIZE], "0\r\n\r\n", 5);
-  tcpip_send(conn, packet);
-  conn->context = NULL;
+  payload->data_size = 5;
+  memcpy(payload->data, "0\r\n\r\n", 5);
+  tcpip_send(conn, payload);
+  
+  conn->context[TCPIP_CONTEXT_WORDS-1] = 0;
 }
 
 

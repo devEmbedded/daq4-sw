@@ -19,12 +19,13 @@ int main(void)
   usbd_dev = usbnet_init(&st_usbfs_v2_usb_driver, 0xD4000001);
   http_init();
   
-  tcpip_diagnostics_init();
   http_index_init();
+  tcpip_diagnostics_init();
   
   while (1)
   {
     usbd_poll(usbd_dev);
+    usbnet_poll();
     tcpip_poll();
   }
 }

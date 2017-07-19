@@ -3,6 +3,7 @@
 
 #include <stdlib.h>
 #include <libopencm3/usb/usbd.h>
+#include "buffer.h"
 
 #define USBNET_BUFFER_SIZE 768
 #define USBNET_BUFFER_COUNT 4
@@ -11,35 +12,32 @@
 #define USBNET_USB_PACKET_SIZE 64
 #define USBNET_MAX_RX_QUEUE 1
 
-typedef struct _usbnet_buffer_t {
-    struct _usbnet_buffer_t *next;
-    const uint16_t max_size;
-    uint16_t data_size;
-    uint8_t data[];
-} usbnet_buffer_t;
-
 /* Module initialization */
 usbd_device *usbnet_init(const usbd_driver *driver, uint32_t serialnumber);
 
-/* Functions below are safe to use from IRQs. */
-
+/* Returns true if the connection is ready.
+ * Safe to call from IRQs.
+ */
 bool usbnet_is_connected();
 
-/* Allocate a buffer for use for formatting a frame to be transmitted.
- * Returns NULL if all buffers are in use. */
-usbnet_buffer_t *usbnet_allocate(size_t size);
+/* Schedule a buffer for transmission.
+ * Safe to call from IRQs.
+ */
+void usbnet_transmit(buffer_t *buffer);
 
-/* Schedule a buffer for transmission. */
-void usbnet_transmit(usbnet_buffer_t *buffer);
-
-/* Query current TX buffer size (number of queued frames) */
+/* Query current TX buffer size (number of queued frames).
+ * 0 = line idle, 1 = one frame currently transmitting, 2+ = queued frames
+ * Safe to call from IRQs.
+ */
 size_t usbnet_get_tx_queue_size();
 
-/* Return a received buffer, or NULL. */
-usbnet_buffer_t *usbnet_receive();
+/* Return a received buffer, or NULL.
+ * Safe to call from IRQs.
+ */
+buffer_t *usbnet_receive();
 
-/* Free a received or otherwise allocated buffer. */
-void usbnet_release(usbnet_buffer_t *buffer);
+/* Called by main thread for periodic processing. */
+void usbnet_poll();
 
 #endif
 

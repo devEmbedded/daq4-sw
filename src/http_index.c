@@ -8,8 +8,7 @@ void http_index(tcpip_conn_t *conn, http_request_t *request)
   char buf[64];
   snprintf(buf, sizeof(buf), "Hello, time is now %u!\n", (unsigned)get_systime());
   
-  http_start_response(conn, 200, "text/plain", buf);
-  http_end_response(conn);
+  http_start_response(conn, 200, "text/plain", buf, true);
 }
 
 static http_url_handler_t g_index_handler = {NULL, "/", http_index};

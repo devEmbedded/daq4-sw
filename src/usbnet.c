@@ -10,13 +10,8 @@
 #include <assert.h>
 #include <libopencm3/cm3/cortex.h>
 
-#if defined(USBNET_DEBUG)
-#define dbg(fmt, ...) printf(__FILE__ ":%3d: " fmt "\n", __LINE__, ##__VA_ARGS__)
-#else
-#define dbg(fmt, ...)
-#endif
-
-#define warn(fmt, ...) printf(__FILE__ ":%3d: [WARN] " fmt "\n", __LINE__, ##__VA_ARGS__)
+/* #define DEBUG */
+#include "debug.h"
 
 /******************
  * Initialization *
@@ -24,10 +19,8 @@
 
 /* There are a few small buffers for ACK packets and such,
  * and a few large buffers for data transfers. */
-static struct {usbnet_buffer_t buf; uint8_t data[USBNET_BUFFER_SIZE];} g_usbnet_bigbuffers[USBNET_BUFFER_COUNT];
-static struct {usbnet_buffer_t buf; uint8_t data[USBNET_SMALLBUF_SIZE];} g_usbnet_smallbuffers[USBNET_SMALLBUF_COUNT];
-static usbnet_buffer_t *g_usbnet_free_small;
-static usbnet_buffer_t *g_usbnet_free_big;
+static struct {buffer_t buf; uint8_t data[USBNET_BUFFER_SIZE];} g_usbnet_bigbuffers[USBNET_BUFFER_COUNT];
+static struct {buffer_t buf; uint8_t data[USBNET_SMALLBUF_SIZE];} g_usbnet_smallbuffers[USBNET_SMALLBUF_COUNT];
 
 static usbd_device *g_usbd_dev;
 static uint8_t g_usb_temp_buffer[160] __attribute__((aligned(4)));
@@ -36,8 +29,8 @@ static mac_addr_t g_rndis_mac_addr;
 
 static bool g_cdcecm_connected;
 static bool g_rndis_connected;
-static usbnet_buffer_t *g_usbnet_transmit_queue;
-static usbnet_buffer_t *g_usbnet_received;
+static buffer_t *g_usbnet_transmit_queue;
+static buffer_t *g_usbnet_received;
 
 static bool rx_alloc_buffer(size_t size);
 static void usbnet_set_config(usbd_device *usbd_dev, uint16_t wValue);
@@ -82,13 +75,13 @@ usbd_device *usbnet_init(const usbd_driver *driver, uint32_t serialnumber)
   for (int i = 0; i < USBNET_BUFFER_COUNT; i++)
   {
     *(uint16_t*)&g_usbnet_bigbuffers[i].buf.max_size = USBNET_BUFFER_SIZE;
-    usbnet_release(&g_usbnet_bigbuffers[i].buf);
+    buffer_release(&g_usbnet_bigbuffers[i].buf);
   }
 
   for (int i = 0; i < USBNET_SMALLBUF_COUNT; i++)
   {
     *(uint16_t*)&g_usbnet_smallbuffers[i].buf.max_size = USBNET_SMALLBUF_SIZE;
-    usbnet_release(&g_usbnet_smallbuffers[i].buf);
+    buffer_release(&g_usbnet_smallbuffers[i].buf);
   }
 
   // Preallocate buffer for first incoming packet
@@ -147,54 +140,11 @@ static void usbnet_set_config(usbd_device *usbd_dev, uint16_t wValue)
                                  rndis_ctrl_callback);
 }
 
-
-/**********************
- * TX/RX linked lists *
- **********************/
-
-static void list_append(usbnet_buffer_t **list, usbnet_buffer_t *element)
-{
-  assert(element->next == NULL);
-  usbnet_buffer_t **tailptr = list;
-  while (*tailptr)
-  {
-    assert(*tailptr != element);
-    tailptr = &(*tailptr)->next;
-  }
-  *tailptr = element;
-}
-
-static usbnet_buffer_t* list_popfront(usbnet_buffer_t **list)
-{
-  if (*list)
-  {
-    usbnet_buffer_t *result = *list;
-    *list = result->next;
-    result->next = NULL;
-    return result;
-  }
-  else
-  {
-    return NULL;
-  }
-}
-
-static size_t list_size(usbnet_buffer_t *list)
-{
-  size_t size = 0;
-  while (list)
-  {
-    size++;
-    list = list->next;
-  }
-  return size;
-}
-
 /**************************
  * Common RX buffer logic *
  **************************/
 
-static usbnet_buffer_t *g_rx_buffer;
+static buffer_t *g_rx_buffer;
 static bool g_rx_waiting_for_buffer;
 static bool g_rx_discard;
 
@@ -212,21 +162,21 @@ static bool rx_alloc_buffer(size_t size)
   
   if (!g_rx_buffer)
   {
-    if (list_size(g_usbnet_received) < USBNET_MAX_RX_QUEUE)
+    if (bufferlist_size(g_usbnet_received) < USBNET_MAX_RX_QUEUE)
     {
       // Allocate storage for first packet
-      g_rx_buffer = usbnet_allocate(size);
+      g_rx_buffer = buffer_allocate(size);
     }
   }
   else if (g_rx_buffer->max_size < size)
   {
     // Have to increase buffer size
-    usbnet_buffer_t *newbuf = usbnet_allocate(size);
+    buffer_t *newbuf = buffer_allocate(size);
     if (newbuf)
     {
       memcpy(newbuf->data, g_rx_buffer->data, g_rx_buffer->data_size);
       newbuf->data_size = g_rx_buffer->data_size;
-      usbnet_release(g_rx_buffer);
+      buffer_release(g_rx_buffer);
       g_rx_buffer = newbuf;
     }
   }
@@ -259,13 +209,13 @@ static void rx_done()
   
   if (!g_rx_discard)
   {
-    list_append(&g_usbnet_received, g_rx_buffer);
+    bufferlist_append(&g_usbnet_received, g_rx_buffer);
     g_rx_buffer = NULL;
   }
   else
   {
     warn("Discarding too long packet, size = %d", (int)g_rx_buffer->data_size);
-    usbnet_release(g_rx_buffer);
+    buffer_release(g_rx_buffer);
     g_rx_buffer = NULL;
     g_rx_discard = false;
   }
@@ -363,7 +313,7 @@ static void cdcecm_rx_callback(usbd_device *usbd_dev, uint8_t ep)
 
 static size_t g_cdcecm_tx_bytes_written;
 static bool g_cdcecm_tx_waiting_for_frame = true;
-static usbnet_buffer_t *g_cdcecm_current_tx_buffer;
+static buffer_t *g_cdcecm_current_tx_buffer;
 
 static void cdcecm_start_tx()
 {
@@ -371,7 +321,7 @@ static void cdcecm_start_tx()
     return;
   
   assert(!g_cdcecm_current_tx_buffer);
-  usbnet_buffer_t *buffer = list_popfront(&g_usbnet_transmit_queue);
+  buffer_t *buffer = bufferlist_popfront(&g_usbnet_transmit_queue);
 
   if (buffer)
   {
@@ -400,7 +350,7 @@ static void cdcecm_tx_callback(usbd_device *usbd_dev, uint8_t ep)
     if (len < USBNET_USB_PACKET_SIZE)
     {
       /* Buffer can be released now */
-      usbnet_release(g_cdcecm_current_tx_buffer);
+      buffer_release(g_cdcecm_current_tx_buffer);
       g_cdcecm_current_tx_buffer = NULL;
     }
   }
@@ -415,7 +365,7 @@ static void cdcecm_tx_callback(usbd_device *usbd_dev, uint8_t ep)
  * RNDIS callbacks *
  *******************/
 
-static usbnet_buffer_t *g_rndis_responses;
+static buffer_t *g_rndis_responses;
 static uint32_t g_rndis_packet_filter;
 static uint32_t g_rndis_host_rx_count;
 static uint32_t g_rndis_host_tx_count;
@@ -476,9 +426,9 @@ static const struct {
   {0x0,                                 4, &(const uint32_t){0}}, /* Default fallback */
 };
 
-static usbnet_buffer_t *rndis_prepare_response(size_t size, struct rndis_command_header *request_hdr)
+static buffer_t *rndis_prepare_response(size_t size, struct rndis_command_header *request_hdr)
 {
-  usbnet_buffer_t *respbuf = usbnet_allocate(size);
+  buffer_t *respbuf = buffer_allocate(size);
   assert(respbuf);
 
   respbuf->data_size = size;
@@ -493,9 +443,9 @@ static usbnet_buffer_t *rndis_prepare_response(size_t size, struct rndis_command
   return respbuf;
 }
 
-static void rndis_send_response(usbnet_buffer_t *response)
+static void rndis_send_response(buffer_t *response)
 {
-  list_append(&g_rndis_responses, response);
+  bufferlist_append(&g_rndis_responses, response);
 
   struct rndis_notification notif = {RNDIS_NOTIFICATION_RESPONSE_AVAILABLE, 0};
   usbd_ep_write_packet(g_usbd_dev, RNDIS_IRQ_EP, &notif, sizeof(notif));
@@ -509,7 +459,7 @@ static void rndis_send_command(uint8_t *buf, uint16_t len)
 //   dbg("RNDIS request %02x", (unsigned)request_hdr->MessageType);
   if (request_hdr->MessageType == RNDIS_MSG_INIT)
   {
-    usbnet_buffer_t *respbuf = rndis_prepare_response(sizeof(struct rndis_initialize_cmplt), request_hdr);
+    buffer_t *respbuf = rndis_prepare_response(sizeof(struct rndis_initialize_cmplt), request_hdr);
     struct rndis_initialize_cmplt *resp = (void*)respbuf->data;
 
     resp->MajorVersion = RNDIS_MAJOR_VERSION;
@@ -529,7 +479,7 @@ static void rndis_send_command(uint8_t *buf, uint16_t len)
   else if (request_hdr->MessageType == RNDIS_MSG_QUERY)
   {
     size_t max_reply_size = sizeof(struct rndis_query_cmplt) + sizeof(g_rndis_supported_oids);
-    usbnet_buffer_t *respbuf = rndis_prepare_response(max_reply_size, request_hdr);
+    buffer_t *respbuf = rndis_prepare_response(max_reply_size, request_hdr);
     struct rndis_query_msg *req = (void*)buf;
     struct rndis_query_cmplt *resp = (void*)respbuf->data;
 
@@ -575,7 +525,7 @@ static void rndis_send_command(uint8_t *buf, uint16_t len)
   }
   else if (request_hdr->MessageType == RNDIS_MSG_SET)
   {
-    usbnet_buffer_t *respbuf = rndis_prepare_response(sizeof(struct rndis_response_header), request_hdr);
+    buffer_t *respbuf = rndis_prepare_response(sizeof(struct rndis_response_header), request_hdr);
     struct rndis_set_msg *req = (void*)buf;
     struct rndis_response_header *resp = (void*)respbuf->data;
 
@@ -611,7 +561,7 @@ static void rndis_send_command(uint8_t *buf, uint16_t len)
   }
   else if (request_hdr->MessageType == RNDIS_MSG_RESET)
   {
-    usbnet_buffer_t *respbuf = rndis_prepare_response(sizeof(struct rndis_reset_cmplt), request_hdr);
+    buffer_t *respbuf = rndis_prepare_response(sizeof(struct rndis_reset_cmplt), request_hdr);
     struct rndis_reset_cmplt *resp = (void*)respbuf->data;
     resp->AddressingReset = 0;
     g_rndis_connected = false;
@@ -619,7 +569,7 @@ static void rndis_send_command(uint8_t *buf, uint16_t len)
   }
   else if (request_hdr->MessageType == RNDIS_MSG_KEEPALIVE)
   {
-    usbnet_buffer_t *respbuf = rndis_prepare_response(sizeof(struct rndis_response_header), request_hdr);
+    buffer_t *respbuf = rndis_prepare_response(sizeof(struct rndis_response_header), request_hdr);
     rndis_send_response(respbuf);
   }
 }
@@ -641,7 +591,7 @@ static void rndis_release_response(usbd_device *usbd_dev, struct usb_setup_data 
 {
   if (g_rndis_responses)
   {
-    usbnet_release(list_popfront(&g_rndis_responses));
+    buffer_release(bufferlist_popfront(&g_rndis_responses));
   }
 }
 
@@ -734,7 +684,7 @@ static void rndis_rx_callback(usbd_device *usbd_dev, uint8_t ep)
 static size_t g_rndis_tx_frame_size;
 static size_t g_rndis_tx_bytes_written;
 static bool g_rndis_tx_waiting_for_frame = true;
-static usbnet_buffer_t *g_rndis_current_tx_buffer;
+static buffer_t *g_rndis_current_tx_buffer;
 
 static void rndis_start_tx()
 {
@@ -744,7 +694,7 @@ static void rndis_start_tx()
   }
   
   assert(!g_rndis_current_tx_buffer);
-  usbnet_buffer_t *buffer = list_popfront(&g_usbnet_transmit_queue);
+  buffer_t *buffer = bufferlist_popfront(&g_usbnet_transmit_queue);
 
   if (buffer)
   {
@@ -782,7 +732,7 @@ static void rndis_tx_callback(usbd_device *usbd_dev, uint8_t ep)
     if (g_rndis_tx_bytes_written >= g_rndis_tx_frame_size)
     {
       /* Buffer can be released now */
-      usbnet_release(g_rndis_current_tx_buffer);
+      buffer_release(g_rndis_current_tx_buffer);
       g_rndis_current_tx_buffer = NULL;
       g_rndis_host_rx_count++;
     }
@@ -804,39 +754,10 @@ bool usbnet_is_connected()
   return g_cdcecm_connected || g_rndis_connected;
 }
 
-usbnet_buffer_t *usbnet_allocate(size_t size)
+void usbnet_transmit(buffer_t *buffer)
 {
   CM_ATOMIC_CONTEXT();
-
-  usbnet_buffer_t *result = NULL;
-
-  if (size <= USBNET_SMALLBUF_SIZE)
-  {
-    result = list_popfront(&g_usbnet_free_small);
-  }
-
-  if (!result)
-  {
-    result = list_popfront(&g_usbnet_free_big);
-  }
-
-  if (result)
-  {
-    assert(result->max_size >= size);
-    result->data_size = 0;
-  }
-  else
-  {
-    warn("No buffers left, trying to allocate %d bytes", (int)size);
-  }
-
-  return result;
-}
-
-void usbnet_transmit(usbnet_buffer_t *buffer)
-{
-  CM_ATOMIC_CONTEXT();
-  list_append(&g_usbnet_transmit_queue, buffer);
+  bufferlist_append(&g_usbnet_transmit_queue, buffer);
 
   if (g_cdcecm_tx_waiting_for_frame && g_cdcecm_connected)
   {
@@ -853,46 +774,19 @@ size_t usbnet_get_tx_queue_size()
 {
   CM_ATOMIC_CONTEXT();
   size_t being_transmitted = (g_cdcecm_tx_waiting_for_frame ? 0 : 1);
-  return list_size(g_usbnet_transmit_queue) + being_transmitted;
+  return bufferlist_size(g_usbnet_transmit_queue) + being_transmitted;
 }
 
-usbnet_buffer_t *usbnet_receive()
+buffer_t *usbnet_receive()
 {
   CM_ATOMIC_CONTEXT();
-  usbnet_buffer_t *result = list_popfront(&g_usbnet_received);
-
-  if (g_rx_waiting_for_buffer)
-  {
-    /* Might be waiting for USBNET_MAX_RX_QUEUE */
-    if (g_cdcecm_connected)
-    {
-      cdcecm_continue_rx();
-    }
-    else if (g_rndis_connected)
-    {
-      rndis_continue_rx();
-    }
-  }
-
-  return result;
+  return bufferlist_popfront(&g_usbnet_received);
 }
 
-void usbnet_release(usbnet_buffer_t *buffer)
+void usbnet_poll()
 {
-  CM_ATOMIC_CONTEXT();
-
-  if (buffer->max_size >= USBNET_BUFFER_SIZE)
-  {
-    list_append(&g_usbnet_free_big, buffer);
-  }
-  else
-  {
-    list_append(&g_usbnet_free_small, buffer);
-  }
-
   if (g_rx_waiting_for_buffer)
   {
-    /* Might be waiting for USBNET_MAX_RX_QUEUE */
     if (g_cdcecm_connected)
     {
       cdcecm_continue_rx();
@@ -903,7 +797,6 @@ void usbnet_release(usbnet_buffer_t *buffer)
     }
   }
 }
-
 
 
 

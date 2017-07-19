@@ -5,16 +5,13 @@
 #include "tcpip.h"
 #include "usbnet.h"
 
-#if defined(TCPIP_DEBUG)
-#define dbg(fmt, ...) printf(__FILE__ ":%3d: " fmt "\n", __LINE__, ##__VA_ARGS__)
-#else
-#define dbg(fmt, ...)
-#endif
-
-#define warn(fmt, ...) printf(__FILE__ ":%3d: [WARN] " fmt "\n", __LINE__, ##__VA_ARGS__)
+/* #define DEBUG */
+#include "debug.h"
 
 ipv6_addr_t g_local_ipv6_addr;
 mac_addr_t g_local_mac_addr;
+tcpip_conn_t g_tcpip_connections[TCPIP_MAX_CONNECTIONS];
+tcpip_listener_t g_tcpip_listeners[TCPIP_MAX_LISTENERS];
 
 /************************
  * Checksum calculation *
@@ -83,7 +80,7 @@ static bool is_our_address(ipv6_addr_t addr)
   return false;
 }
 
-static void prepare_multicast_headers(usbnet_buffer_t *packet)
+static void prepare_multicast_headers(buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -99,7 +96,7 @@ static void prepare_multicast_headers(usbnet_buffer_t *packet)
   response->ipv6.dest = IPV6_ALL_NODES_MULTICAST;
 }
 
-static void prepare_reply_headers(usbnet_buffer_t *packet)
+static void prepare_reply_headers(buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -119,7 +116,7 @@ static void prepare_reply_headers(usbnet_buffer_t *packet)
  * ICMPv6 neighbour solicitation and ping *
  ******************************************/
 
-static void send_neighbor_advertisement(usbnet_buffer_t *packet)
+static void send_neighbor_advertisement(buffer_t *packet)
 {
   bool solicited = (packet != NULL);
   
@@ -137,7 +134,7 @@ static void send_neighbor_advertisement(usbnet_buffer_t *packet)
   if (!packet)
   {
     // Unsolicited advert
-    packet = usbnet_allocate(sizeof(*response));
+    packet = buffer_allocate(sizeof(*response));
     if (!packet) return;
     prepare_multicast_headers(packet);
   }
@@ -151,7 +148,7 @@ static void send_neighbor_advertisement(usbnet_buffer_t *packet)
   if (solicited && !is_our_address(response->payload.target_addr))
   {
     dbg("Request was not for us.");
-    usbnet_release(packet);
+    buffer_release(packet);
     return;
   }
   
@@ -180,7 +177,7 @@ static void send_neighbor_advertisement(usbnet_buffer_t *packet)
   dbg("Neighbour advertisement sent");
 }
 
-static void send_router_advertisement(usbnet_buffer_t *packet)
+static void send_router_advertisement(buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -200,7 +197,7 @@ static void send_router_advertisement(usbnet_buffer_t *packet)
   if (!packet)
   {
     // Unsolicited advert
-    packet = usbnet_allocate(sizeof(*response));
+    packet = buffer_allocate(sizeof(*response));
     if (!packet) return;
     prepare_multicast_headers(packet);
   }
@@ -243,7 +240,7 @@ static void send_router_advertisement(usbnet_buffer_t *packet)
   dbg("Router advertisement sent");
 }
 
-static void send_ping_reply(usbnet_buffer_t *packet)
+static void send_ping_reply(buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -263,7 +260,7 @@ static void send_ping_reply(usbnet_buffer_t *packet)
   dbg("Response sent");
 }
   
-static void handle_icmp6(usbnet_buffer_t *packet)
+static void handle_icmp6(buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -288,7 +285,7 @@ static void handle_icmp6(usbnet_buffer_t *packet)
   }
   else
   {
-    usbnet_release(packet);
+    buffer_release(packet);
   }
 }
 
@@ -316,53 +313,22 @@ static void icmp6_poll()
  * TCP/IP connections *
  **********************/
 
-static tcpip_conn_t *g_tcpip_listeners;
-static tcpip_conn_t *g_tcpip_active;
-
-static void list_append(tcpip_conn_t **list, tcpip_conn_t *element)
+void tcpip_register_listener(uint16_t port, tcpip_callback_t callback)
 {
-  assert(element->next == NULL);
-  tcpip_conn_t **tailptr = list;
-  while (*tailptr)
+  for (int i = 0; i < TCPIP_MAX_LISTENERS; i++)
   {
-    assert(*tailptr != element);
-    tailptr = &(*tailptr)->next;
-  }
-  *tailptr = element;
-}
-
-static void list_remove(tcpip_conn_t **list, tcpip_conn_t *element)
-{
-  tcpip_conn_t **tailptr = list;
-  while (*tailptr != element)
-  {
-    assert(*tailptr);
-    tailptr = &(*tailptr)->next;
+    if (g_tcpip_listeners[i].local_port == 0)
+    {
+      g_tcpip_listeners[i].local_port = port;
+      g_tcpip_listeners[i].callback = callback;
+      return;
+    }
   }
   
-  *tailptr = element->next;
-  element->next = NULL;
+  warn("TCP listener slots all in use, not registering port %d", port);
 }
 
-void tcpip_init_listener(tcpip_conn_t *conn, uint16_t port, tcpip_callback_t callback)
-{
-  conn->next = NULL;
-  conn->state = TCPIP_LISTEN;
-  conn->callback = callback;
-  conn->peer_addr = IPV6_NULL_ADDRESS;
-  conn->peer_mac = MAC_NULL;
-  conn->peer_port = 0;
-  conn->local_port = port;
-  conn->tx_sequence = 0;
-  conn->rx_sequence = 0;
-  conn->last_ack_sent = 0;
-  conn->last_ack_received = 0;
-  
-  dbg("TCP: listening on %d", port);
-  list_append(&g_tcpip_listeners, conn);
-}
-
-void tcpip_send_ctrl(tcpip_conn_t *conn, usbnet_buffer_t *packet, uint16_t control)
+void tcpip_send_ctrl(tcpip_conn_t *conn, buffer_t *packet, uint16_t control)
 {
   if (packet)
   {
@@ -371,7 +337,7 @@ void tcpip_send_ctrl(tcpip_conn_t *conn, usbnet_buffer_t *packet, uint16_t contr
   }
   else
   {
-    packet = usbnet_allocate(TCPIP_HEADER_SIZE);
+    packet = buffer_allocate(TCPIP_HEADER_SIZE);
     
     if (!packet)
     {
@@ -416,7 +382,7 @@ void tcpip_send_ctrl(tcpip_conn_t *conn, usbnet_buffer_t *packet, uint16_t contr
   hdr->tcp.sequence = uint32_to_buint32(conn->tx_sequence);
   hdr->tcp.ack = uint32_to_buint32(conn->rx_sequence);
   hdr->tcp.control = uint16_to_buint16(control | data_offset);
-  hdr->tcp.window_size = uint16_to_buint16(TCP_WINDOW_SIZE);
+  hdr->tcp.window_size = uint16_to_buint16(TCPIP_WINDOW_SIZE);
   hdr->tcp.urgent_pointer = uint16_to_buint16(0);
   hdr->tcp.checksum = tcp_checksum(&hdr->ipv6);
   
@@ -424,13 +390,37 @@ void tcpip_send_ctrl(tcpip_conn_t *conn, usbnet_buffer_t *packet, uint16_t contr
       (int)payload_len, (unsigned)conn->tx_sequence);
   conn->tx_sequence += payload_len;
   conn->last_ack_sent = conn->rx_sequence;
+  conn->last_event = get_systime();
   
   usbnet_transmit(packet);
 }
 
-void tcpip_send(tcpip_conn_t *conn, usbnet_buffer_t *packet)
+buffer_t* tcpip_allocate(size_t size)
+{
+  /* We pass the lower layer a smaller buffer and reserve ourselves
+   * space for appending the headers later. */
+  buffer_t *packet = buffer_allocate(size + TCPIP_HEADER_SIZE);
+  if (packet)
+  {
+    buffer_t *payload = buffer_slice(packet, TCPIP_HEADER_SIZE, 0);
+    return payload;
+  }
+  else
+  {
+    return NULL;
+  }
+}
+
+void tcpip_release(buffer_t* buffer)
+{
+  buffer_release(buffer_unslice(buffer, TCPIP_HEADER_SIZE, 0));
+}
+
+void tcpip_send(tcpip_conn_t *conn, buffer_t *payload)
 {
   assert(conn->state == TCPIP_ESTABLISHED);
+  
+  buffer_t *packet = buffer_unslice(payload, TCPIP_HEADER_SIZE, 0);
   tcpip_send_ctrl(conn, packet, TCPIP_CONTROL_ACK);
 }
 
@@ -441,12 +431,9 @@ void tcpip_close(tcpip_conn_t *conn)
   tcpip_send_ctrl(conn, NULL, TCPIP_CONTROL_FIN | TCPIP_CONTROL_ACK);
   conn->state = TCPIP_CLOSED;
   conn->callback(conn, NULL);
-  
-  list_remove(&g_tcpip_active, conn);
-  tcpip_init_listener(conn, conn->local_port, conn->callback);
 }
 
-static void tcp_send_rst(usbnet_buffer_t *packet)
+static void tcp_send_rst(buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -477,7 +464,39 @@ static void tcp_send_rst(usbnet_buffer_t *packet)
   usbnet_transmit(packet);
 }
 
-static void handle_tcp_syn(usbnet_buffer_t *packet)
+static tcpip_conn_t *allocate_connection()
+{
+  tcpip_conn_t *result = NULL;
+  systime_t time_now = get_systime();
+  int oldest = 0;
+  for (int i = 0; i < TCPIP_MAX_CONNECTIONS; i++)
+  {
+    if (g_tcpip_connections[i].state == TCPIP_CLOSED)
+    {
+      result = &g_tcpip_connections[i];
+      break;
+    }
+    
+    systime_t delta1 = time_now - g_tcpip_connections[oldest].last_event;
+    systime_t delta2 = time_now - g_tcpip_connections[i].last_event;
+    if (delta2 > delta1)
+    {
+      oldest = i;
+    }
+  }
+  
+  if (!result)
+  {
+    warn("TCP no free connection slots, terminating oldest connection");
+    tcpip_close(&g_tcpip_connections[oldest]);
+    result = &g_tcpip_connections[oldest];
+  }
+  
+  memset(result, 0, sizeof(tcpip_conn_t));
+  return result;
+}
+
+static void handle_tcp_syn(buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -485,15 +504,14 @@ static void handle_tcp_syn(usbnet_buffer_t *packet)
     tcp_header_t tcp;
   } *hdr = (void*)packet->data;
   
-  tcpip_conn_t *conn = g_tcpip_listeners;
-  while (conn)
+  for (int i = 0; i < TCPIP_MAX_LISTENERS; i++)
   {
-    if (conn->local_port == buint16_to_uint16(hdr->tcp.dest_port))
+    if (g_tcpip_listeners[i].local_port == buint16_to_uint16(hdr->tcp.dest_port))
     {
-      assert(conn->state == TCPIP_LISTEN);
-      list_remove(&g_tcpip_listeners, conn);
-      list_append(&g_tcpip_active, conn);
+      tcpip_conn_t *conn = allocate_connection();
       conn->state = TCPIP_ESTABLISHED;
+      conn->local_port = g_tcpip_listeners[i].local_port;
+      conn->callback = g_tcpip_listeners[i].callback;
       
       dbg("TCP connected port=%d", conn->local_port);
 
@@ -510,8 +528,6 @@ static void handle_tcp_syn(usbnet_buffer_t *packet)
       conn->callback(conn, NULL);
       return;
     }
-    
-    conn = conn->next;
   }
   
   // No matching listener found, send RST
@@ -519,7 +535,7 @@ static void handle_tcp_syn(usbnet_buffer_t *packet)
   tcp_send_rst(packet);
 }
 
-static void handle_tcp_active(usbnet_buffer_t *packet)
+static void handle_tcp_active(buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -533,33 +549,35 @@ static void handle_tcp_active(usbnet_buffer_t *packet)
                           (buint16_to_uint16(hdr->tcp.control) >> 12) * 4);
   size_t data_len = packet->data_size - data_offset;
   
-  tcpip_conn_t *conn = g_tcpip_active;
-  while (conn)
+  for (int i = 0; i < TCPIP_MAX_CONNECTIONS; i++)
   {
-    if (conn->local_port == buint16_to_uint16(hdr->tcp.dest_port) &&
+    tcpip_conn_t *conn = &g_tcpip_connections[i];
+    if (conn->state == TCPIP_ESTABLISHED &&
+        conn->local_port == buint16_to_uint16(hdr->tcp.dest_port) &&
         conn->peer_port == buint16_to_uint16(hdr->tcp.source_port) &&
         memcmp(&conn->peer_addr, &hdr->ipv6.source, sizeof(ipv6_addr_t)) == 0)
     {
+      conn->last_ack_received = buint32_to_uint32(hdr->tcp.ack);
+      conn->last_event = get_systime();
+      dbg("TCP data len=%d to port=%d", (int)data_len, conn->local_port);
+      
       if (data_len)
       {
-        if (sequence < conn->rx_sequence && sequence + TCP_WINDOW_SIZE > conn->rx_sequence)
+        if (sequence < conn->rx_sequence && sequence + TCPIP_WINDOW_SIZE > conn->rx_sequence)
         {
           warn("Ignoring TCP resend");
-          usbnet_release(packet);
+          buffer_release(packet);
           return;
         }
         else if (sequence > conn->rx_sequence)
         {
           warn("TCPIP sequence mismatch: expected %08x, got %08x",
                (unsigned)conn->rx_sequence, (unsigned)sequence);
-          usbnet_release(packet);
+          buffer_release(packet);
           tcpip_close(conn);
           return;
         }
         
-        conn->last_ack_received = buint32_to_uint32(hdr->tcp.ack);
-        
-        dbg("TCP data len=%d to port=%d", (int)data_len, conn->local_port);
         conn->rx_sequence += data_len;
         
         if (data_offset > TCPIP_HEADER_SIZE)
@@ -568,11 +586,12 @@ static void handle_tcp_active(usbnet_buffer_t *packet)
           packet->data_size = TCPIP_HEADER_SIZE + data_len;
         }
         
-        conn->callback(conn, packet);
+        buffer_t *payload = buffer_slice(packet, TCPIP_HEADER_SIZE, 0);
+        conn->callback(conn, payload);
       }
       else
       {
-        usbnet_release(packet);
+        buffer_release(packet);
       }
       
       if (control & (TCPIP_CONTROL_FIN | TCPIP_CONTROL_RST))
@@ -583,14 +602,12 @@ static void handle_tcp_active(usbnet_buffer_t *packet)
 
       return;
     }
-    
-    conn = conn->next;
   }
   
   if ((control & TCPIP_CONTROL_ACK) && data_len == 0)
   {
     // Probably just ACK to FIN-ACK, ignore
-    usbnet_release(packet);
+    buffer_release(packet);
     return;
   }
   
@@ -602,30 +619,30 @@ static void handle_tcp_active(usbnet_buffer_t *packet)
 // Give all active connections a chance to do their processing
 static void tcp_poll()
 {
-  tcpip_conn_t *conn = g_tcpip_active;
-  while (conn)
+  for (int i = 0; i < TCPIP_MAX_CONNECTIONS; i++)
   {
-    tcpip_conn_t *next = conn->next; // Just in case the callback closes connection.
-    conn->callback(conn, NULL);
-    
-    if (conn->state == TCPIP_ESTABLISHED && conn->last_ack_sent != conn->rx_sequence)
+    tcpip_conn_t *conn = &g_tcpip_connections[i];
+  
+    if (conn->state == TCPIP_ESTABLISHED)
     {
-      // Ack the received data so far
-      tcpip_send(conn, NULL);
+      conn->callback(conn, NULL);
+      
+      if (conn->last_ack_sent != conn->rx_sequence)
+      {
+        // Ack the received data so far
+        tcpip_send(conn, NULL);
+      }
+      
+      if (conn->tx_sequence > conn->last_ack_received + 2 * TCPIP_WINDOW_SIZE)
+      {
+        warn("TCP closing connection due to not getting ACKs");
+        tcpip_close(conn);
+      }
     }
-    
-    if (conn->state == TCPIP_ESTABLISHED
-        && conn->tx_sequence > conn->last_ack_received + 2 * TCP_WINDOW_SIZE)
-    {
-      warn("TCP closing connection due to not getting ACKs");
-      tcpip_close(conn);
-    }
-    
-    conn = next;
   }
 }
 
-static void handle_tcp(usbnet_buffer_t *packet)
+static void handle_tcp(buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -651,7 +668,7 @@ static void handle_tcp(usbnet_buffer_t *packet)
  * Polling for received packets *
  ********************************/
 
-static void handle_ipv6(usbnet_buffer_t *packet)
+static void handle_ipv6(buffer_t *packet)
 {
   struct {
     ethernet_header_t eth;
@@ -681,7 +698,7 @@ static void handle_ipv6(usbnet_buffer_t *packet)
   }
   else
   {
-    usbnet_release(packet);
+    buffer_release(packet);
   }
 }
 
@@ -690,7 +707,7 @@ void tcpip_poll()
   if (!usbnet_is_connected())
     return;
   
-  usbnet_buffer_t *packet = usbnet_receive();
+  buffer_t *packet = usbnet_receive();
   while (packet)
   {
     ethernet_header_t *hdr = (ethernet_header_t*)packet->data;
@@ -710,7 +727,7 @@ void tcpip_poll()
     }
     else
     {
-      usbnet_release(packet);
+      buffer_release(packet);
     }
     
     (void)start;
